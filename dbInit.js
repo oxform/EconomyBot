@@ -25,14 +25,65 @@ const force = process.argv.includes("--force") || process.argv.includes("-f");
 sequelize
   .sync({ force })
   .then(async () => {
-    const shop = [
-      CurrencyShop.upsert({ name: "Bronze Printer", cost: 2500 }),
-      CurrencyShop.upsert({ name: "Silver Printer", cost: 7500 }),
-      CurrencyShop.upsert({ name: "Gold Printer", cost: 18000 }),
-      CurrencyShop.upsert({ name: "Platinum Printer", cost: 45000 }),
-      CurrencyShop.upsert({ name: "Diamond Printer", cost: 125000 }),
-      CurrencyShop.upsert({ name: "Quantum Printer", cost: 300000 }),
+    const printers = [
+      { name: "Bronze Printer", cost: 2500, base_rate: 1 },
+      { name: "Silver Printer", cost: 10000, base_rate: 3 },
+      { name: "Gold Printer", cost: 25000, base_rate: 6 },
+      { name: "Platinum Printer", cost: 75000, base_rate: 15 },
+      { name: "Titanium Printer", cost: 125000, base_rate: 25 },
+      { name: "Diamond Printer", cost: 250000, base_rate: 40 },
+      { name: "Quantum Printer", cost: 500000, base_rate: 100 },
+      { name: "Neutronium Printer", cost: 1000000, base_rate: 250 },
     ];
+
+    const upgradeTypes = [
+      {
+        name: "Output Improver",
+        base_effect: 0.3,
+        effect_increase: 0.1,
+        max_level: 5,
+      },
+      {
+        name: "Speed Enhancer",
+        base_effect: 0.25,
+        effect_increase: 0.05,
+        max_level: 5,
+      },
+      {
+        name: "Capacity Expansion",
+        base_effect: 0.4,
+        effect_increase: 0.1,
+        max_level: 5,
+      },
+    ];
+
+    const shop = [];
+
+    // Add printers
+    for (const printer of printers) {
+      shop.push(CurrencyShop.upsert(printer));
+    }
+
+    // Add printer-specific upgrades
+    for (const printer of printers) {
+      for (const upgradeType of upgradeTypes) {
+        const upgradeName = `${printer.name} ${upgradeType.name}`;
+        const upgradeData = {
+          name: upgradeName,
+          cost: Math.round(printer.cost * 0.15), // 20% of printer cost
+          type: "upgrade",
+          applies_to: printer.name,
+          upgrade_type: upgradeType.name.split(" ")[0].toLowerCase(),
+          max_level: upgradeType.max_level,
+          base_effect: upgradeType.base_effect,
+          effect_increase: upgradeType.effect_increase,
+          description: `Improves the ${upgradeType.name.toLowerCase()} of your ${
+            printer.name
+          }.`,
+        };
+        shop.push(CurrencyShop.upsert(upgradeData));
+      }
+    }
 
     await Promise.all(shop);
     console.log("Database synced");

@@ -52,15 +52,17 @@ const allPrinters = [
   "Silver Printer",
   "Gold Printer",
   "Platinum Printer",
+  "Titanium Printer",
   "Diamond Printer",
   "Quantum Printer",
+  "Neutronium Printer",
 ];
 
 async function handleDaily(message) {
   const userId = message.author.id;
   const now = Date.now();
   const cooldownAmount = 16 * 60 * 60 * 1000; // 16 hours in milliseconds
-  const dailyAmount = Math.floor(Math.random() * (500 - 100 + 1)) + 500;
+  const dailyAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
 
   if (dailyCooldowns.has(userId)) {
     const expirationTime = dailyCooldowns.get(userId) + cooldownAmount;
@@ -82,7 +84,14 @@ async function handleDaily(message) {
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
 
-      return message.reply({ embeds: [embed] });
+      const sentMessage = await message.reply({ embeds: [embed] });
+
+      // Delete the message after 5 seconds
+      setTimeout(() => {
+        sentMessage.delete().catch(console.error);
+      }, 5000);
+
+      return;
     }
   }
 
@@ -188,7 +197,10 @@ async function rob(robberId, targetId) {
 
   const successChance = 0.9;
   if (Math.random() < successChance) {
-    const stolenAmount = Math.floor(Math.random() * (target.wallet * 0.5)) + 1;
+    const minAmount = target.wallet * 0.25;
+    const maxAmount = target.wallet * 0.6;
+    const stolenAmount =
+      Math.floor(Math.random() * (maxAmount - minAmount + 1)) + minAmount;
     await addBalance(robberId, stolenAmount);
     await addBalance(targetId, -stolenAmount);
     return {
@@ -229,7 +241,6 @@ async function initializeBankAccounts() {
     where: { bank_balance: { [Op.gt]: 0 } },
   });
   storedAccounts.forEach((account) => {
-    console.log("initialising accounts", account);
     bankAccounts.set(account.user_id, {
       balance: account.balance,
       bank_balance: account.bank_balance || 0,
@@ -263,8 +274,6 @@ async function deposit(userId, amount) {
 
   bankAccounts.set(userId, account);
 
-  console.log("account", account);
-
   // Update database
   await Users.update(
     { bank_balance: account.bank_balance, balance: account.balance },
@@ -279,8 +288,6 @@ async function deposit(userId, amount) {
 // Withdraw money from bank
 async function withdraw(userId, amount) {
   let account = bankAccounts.get(userId);
-  console.log("account123", account);
-  console.log("bankAccounts", bankAccounts);
   if (!account || account.bank_balance < amount)
     return "You don't have enough money in your bank account.";
 
@@ -328,7 +335,6 @@ async function calculateInterest(userId) {
   let totalAccumulatedInterest = fullBalance.accumulatedInterest || 0;
 
   if (periodsPassed > 0) {
-    console.log("account.bank_balance ", account.bank_balance);
     newInterest = Math.floor(
       (account.bank_balance || 0) * (interestRate / 100) * periodsPassed
     );
@@ -382,6 +388,29 @@ async function addBalance(id, amount) {
   return newUser;
 }
 
+async function addBankBalance(id, amount) {
+  const user = bankAccounts.get(id);
+  if (user) {
+    user.bank_balance += Number(amount);
+
+    // Update database
+    await Users.update(
+      { bank_balance: user.bank_balance },
+      { where: { user_id: id } }
+    );
+
+    return user;
+  }
+
+  const newUser = await Users.create({
+    user_id: id,
+    balance: 0,
+    bank_balance: amount,
+  });
+  bankAccounts.set(id, newUser);
+  return newUser;
+}
+
 async function getFullBalance(userId) {
   const [user] = await Users.findOrCreate({
     where: { user_id: userId },
@@ -414,9 +443,16 @@ async function getBalance(userId) {
   return user ? user.balance : 0;
 }
 
+async function getBankBalance(userId) {
+  const user = bankAccounts.get(userId);
+  return user ? user.bank_balance : 0;
+}
+
 initializeBankAccounts();
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(
+  "MTI3MzkzMTM0MjQ2MzIzODIxOA.GPcdim.KWlQvIrTJLtob2hm6Zl6yE8_PMFJuDpkO_7LLs"
+);
 
 let timeStarted;
 
@@ -470,7 +506,13 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   } else if (commandName === "shop") {
-    const items = await CurrencyShop.findAll();
+    const items = await CurrencyShop.findAll({
+      where: {
+        type: {
+          [Op.or]: [null, { [Op.ne]: "upgrade" }],
+        },
+      },
+    });
     const userItems = await UserItems.findAll({
       where: { user_id: message.author.id },
       include: ["item"],
@@ -494,6 +536,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   } else if (commandName === "buy") {
     const itemName = args.join(" ");
+    const user = await getFullBalance(message.author.id);
     if (!itemName) {
       return message.reply("Please specify an item to buy.");
     }
@@ -505,10 +548,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("That item doesn't exist.");
     }
 
-    const user = await Users.findOne({ where: { user_id: message.author.id } });
-    if (item.cost > user.balance) {
+    if (item.cost > user.bank) {
       return message.reply(
-        `You currently have 🪙${user.balance}, but the ${item.name} costs 🪙${item.cost}!`
+        `You currently have 🪙${user.bank_balance}, but the ${item.name} costs 🪙${item.cost}!`
       );
     }
 
@@ -528,7 +570,7 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    await addBalance(message.author.id, -item.cost);
+    await addBankBalance(message.author.id, -item.cost);
 
     const userItem = await UserItems.findOne({
       where: { user_id: message.author.id, item_id: item.id },
@@ -551,8 +593,8 @@ client.on("messageCreate", async (message) => {
       .addFields(
         { name: "Cost", value: `🪙${item.cost}`, inline: true },
         {
-          name: "New Balance",
-          value: `🪙${(user.balance - item.cost).toLocaleString()}`,
+          name: "New Bank Balance",
+          value: `🪙${(user.bank - item.cost).toLocaleString()}`,
           inline: true,
         }
       )
@@ -580,10 +622,13 @@ client.on("messageCreate", async (message) => {
         )
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      const sentMessage = await message.reply({ embeds: [embed] });
+      setTimeout(() => {
+        sentMessage.delete().catch(console.error);
+      }, 5000);
+      return;
     }
-
-    const addAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 200;
+    const addAmount = Math.floor(Math.random() * (300 - 100 + 1)) + 250;
     await addBalance(message.author.id, addAmount);
     const newBalance = await getBalance(message.author.id);
     const embed = new EmbedBuilder()
@@ -612,13 +657,16 @@ client.on("messageCreate", async (message) => {
         )
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      const sentMessage = await message.reply({ embeds: [embed] });
+      setTimeout(() => {
+        sentMessage.delete().catch(console.error);
+      }, 5000);
+      return;
     }
-
     const successRate = Math.random();
     if (successRate < 0.8) {
       // 80% chance of success
-      const addAmount = Math.floor(Math.random() * 600) + 420; // Higher risk, higher reward
+      const addAmount = Math.floor(Math.random() * 600) + 450; // Higher risk, higher reward
       await addBalance(message.author.id, addAmount);
       const newBalance = await getBalance(message.author.id);
       const embed = new EmbedBuilder()
@@ -765,7 +813,8 @@ client.on("messageCreate", async (message) => {
     } catch (error) {
       message.reply(`Error: ${error.message}`);
     }
-  } else if (
+  }
+  if (
     commandName === "bank" ||
     commandName === "balance" ||
     commandName === "bal"
@@ -780,20 +829,20 @@ client.on("messageCreate", async (message) => {
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
           .setColor("#3498db")
-          .setTitle(`Bank Account - ${targetUser.username}`)
+          .setTitle(`🏦 Balance - ${targetUser.username}`)
           .addFields(
             {
-              name: "Bank Balance",
-              value: `🪙 ${account.bank.toLocaleString()}`,
-              inline: true,
-            },
-            {
-              name: "Wallet Balance",
+              name: "Wallet",
               value: `🪙 ${account.wallet.toLocaleString()}`,
               inline: true,
             },
             {
-              name: "Total Balance",
+              name: "Bank",
+              value: `🪙 ${account.bank.toLocaleString()}`,
+              inline: true,
+            },
+            {
+              name: "Total",
               value: `🪙 ${(account.bank + account.wallet).toLocaleString()}`,
               inline: true,
             },
@@ -803,7 +852,7 @@ client.on("messageCreate", async (message) => {
               inline: true,
             }
           )
-          .setFooter({ text: "Azus Bot" })
+          .setFooter({ text: "Azus Bot • Use buttons below to collect" })
           .setTimestamp();
 
         if (
@@ -818,17 +867,32 @@ client.on("messageCreate", async (message) => {
         }
 
         if (printers.length > 0) {
-          const printerInfo = printers
-            .map((p, index) => {
-              const readyToCollect =
-                printerMoney.printerDetails[index].split(": ")[1];
-              return `${p.item.name}: ${readyToCollect}`;
+          const printerInfo = printerMoney.printerDetails
+            .map((p) => {
+              const name = `${p.name}`;
+              const generated = `🪙 ${p.generated.toLocaleString()} / ${p.capacity.toLocaleString()}`;
+              const rate = `💰 ${p.outputPerCycle.toLocaleString()}/cycle`;
+              const interval = `⏱️ ${formatTime(p.interval)}`;
+
+              return [
+                `__**${name}**__`,
+                `Generated: ${generated}`,
+                `Rate: ${rate}`,
+                `Interval: ${interval}`,
+                "", // Add an empty line for spacing between printers
+              ].join("\n");
             })
             .join("\n");
 
           embed.addFields({
             name: "Money Printers",
-            value: `${printerInfo}`,
+            value: printerInfo || "No printers available",
+            inline: false,
+          });
+
+          embed.addFields({
+            name: "Total Ready to Collect",
+            value: `🪙 ${Math.floor(printerMoney.totalReady.toLocaleString())}`,
             inline: false,
           });
         }
@@ -839,13 +903,13 @@ client.on("messageCreate", async (message) => {
           const collectButton = new ButtonBuilder()
             .setCustomId("collect_interest")
             .setLabel("Collect Interest")
-            .setStyle("Primary")
+            .setStyle(ButtonStyle.Primary)
             .setDisabled(interestInfo.accumulatedInterest <= 0);
 
           const collectPrintersButton = new ButtonBuilder()
             .setCustomId("collect_printers")
             .setLabel("Collect Printers")
-            .setStyle("Success")
+            .setStyle(ButtonStyle.Success)
             .setDisabled(printerMoney.totalReady <= 0);
 
           const row = new ActionRowBuilder().addComponents(
@@ -987,7 +1051,11 @@ client.on("messageCreate", async (message) => {
         .setDescription("You can only use the hobo command when you're broke!")
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      const sentMessage = await message.reply({ embeds: [embed] });
+      setTimeout(() => {
+        sentMessage.delete().catch(console.error);
+      }, 5000);
+      return;
     }
 
     const cooldownLeft = updateHoboCooldown(message.author.id);
@@ -1001,7 +1069,11 @@ client.on("messageCreate", async (message) => {
         )
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      const sentMessage = await message.reply({ embeds: [embed] });
+      setTimeout(() => {
+        sentMessage.delete().catch(console.error);
+      }, 5000);
+      return;
     }
 
     const earnedAmount = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
@@ -1139,6 +1211,11 @@ client.on("messageCreate", async (message) => {
           value: "Purchase an item from the shop",
           inline: true,
         },
+        {
+          name: "!upgrade <printer>",
+          value: "Upgrade your printer for more money",
+          inline: true,
+        },
         { name: "!inventory", value: "View your inventory", inline: true },
         {
           name: "!leaderboard (or !lb)",
@@ -1184,6 +1261,36 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "slotspayout") {
     await handleSlotsPayout(message);
+  }
+  if (commandName === "upgrade") {
+    let printerName = args.join(" ");
+    printerName = args
+      .map((arg) => arg.charAt(0).toUpperCase() + arg.slice(1))
+      .join(" ");
+
+    if (!printerName) {
+      return message.reply("Usage: !upgrade [printer name]");
+    }
+
+    const user = await Users.findOne({ where: { user_id: message.author.id } });
+    const printer = await UserItems.findOne({
+      where: { user_id: message.author.id },
+      include: [
+        {
+          model: CurrencyShop,
+          as: "item",
+          where: { name: printerName, type: "printer" },
+        },
+      ],
+    });
+
+    if (!printer) {
+      return message.reply("You don't own that printer or it doesn't exist.");
+    }
+
+    const { embed, row } = await createUpgradeEmbed(printer, user);
+
+    return message.reply({ embeds: [embed], components: [row] });
   }
 });
 
@@ -1278,7 +1385,9 @@ function createGameEmbed(
   return new EmbedBuilder()
     .setColor("#2C2F33")
     .setTitle("Blackjack")
-    .setDescription("Hit - Take another card\nStand - End the game")
+    .setDescription(
+      "Hit - Take another card\nStand - End the game\nDouble Down - Double your bet and take one more card\nSplit - Split your hand if you have two cards of the same value"
+    )
     .addFields(
       {
         name: "Your Hand",
@@ -1313,39 +1422,101 @@ function createGameEmbed(
     );
 }
 
+function createSplitEmbed(hands, dealerHand, userStats, bets) {
+  const embed = new EmbedBuilder()
+    .setColor("#2C2F33")
+    .setTitle("Blackjack - Split Hands")
+    .setDescription("You've split your hand. Play each hand separately.");
+
+  hands.forEach((hand, index) => {
+    const handValue = calculateHandValue(hand);
+    embed.addFields({
+      name: `Hand ${index + 1}`,
+      value: hand.map(createCardEmoji).join(" ") + ` (${handValue})`,
+      inline: true,
+    });
+  });
+
+  const dealerValue = getCardValue(dealerHand[0]);
+  embed.addFields(
+    {
+      name: "Dealer Hand",
+      value: `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValue})`,
+      inline: false,
+    },
+    {
+      name: "Bets",
+      value: bets.map((bet) => `🪙${bet}`).join(", "),
+      inline: true,
+    },
+    {
+      name: "Win Streak",
+      value: userStats.winStreak.toString(),
+      inline: true,
+    },
+    {
+      name: "Multiplier",
+      value: userStats.multiplier.toFixed(1) + "x",
+      inline: true,
+    }
+  );
+
+  return embed;
+}
+
 async function createFinalEmbed(
-  playerHand,
+  results,
   dealerHand,
   userStats,
-  result,
-  payout,
-  bet,
+  totalPayout,
+  initialBet,
   userId
 ) {
-  const playerValue = calculateHandValue(playerHand);
   const dealerValue = calculateHandValue(dealerHand);
   const newBalance = await getBalance(userId);
 
-  return new EmbedBuilder()
-    .setColor(payout > 0 ? "#00ff00" : payout < 0 ? "#ff0000" : "#ffff00")
+  const embed = new EmbedBuilder()
+    .setColor(
+      totalPayout > 0 ? "#00ff00" : totalPayout < 0 ? "#ff0000" : "#ffff00"
+    )
     .setTitle("Blackjack Result")
+    .addFields({
+      name: "Dealer Hand",
+      value: dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`,
+      inline: false,
+    });
+
+  results.forEach((result, index) => {
+    const playerValue = calculateHandValue(result.hand);
+    embed.addFields(
+      {
+        name: `Your Hand ${index + 1}${result.doubledDown ? " (Doubled)" : ""}`,
+        value: result.hand.map(createCardEmoji).join(" ") + ` (${playerValue})`,
+        inline: true,
+      },
+      {
+        name: "Result",
+        value: result.result,
+        inline: true,
+      },
+      {
+        name: "Payout",
+        value: `🪙 ${Math.abs(result.payout).toLocaleString()}`,
+        inline: true,
+      }
+    );
+  });
+
+  embed
     .addFields(
       {
-        name: "Your Hand",
-        value: playerHand.map(createCardEmoji).join(" ") + ` (${playerValue})`,
+        name: "Initial Bet",
+        value: `🪙 ${initialBet.toLocaleString()}`,
         inline: true,
       },
       {
-        name: "Dealer Hand",
-        value: dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`,
-        inline: true,
-      },
-      { name: "\u200B", value: "\u200B" },
-      { name: "Result", value: result, inline: false },
-      { name: "Bet", value: `🪙 ${bet.toLocaleString()}`, inline: true },
-      {
-        name: payout > 0 ? "Won" : payout < 0 ? "Lost" : "Returned",
-        value: `🪙 ${Math.floor(Math.abs(payout)).toLocaleString()}`,
+        name: "Total Payout",
+        value: `🪙 ${Math.abs(totalPayout).toLocaleString()}`,
         inline: true,
       },
       {
@@ -1366,20 +1537,49 @@ async function createFinalEmbed(
     )
     .setFooter({ text: "Azus Bot" })
     .setTimestamp();
+
+  return embed;
 }
-function createActionRow() {
+function createActionRow(playerHand, bet, doubledDown = false) {
   const hitButton = new ButtonBuilder()
     .setCustomId("blackjack_hit")
     .setLabel("Hit")
-    .setStyle(ButtonStyle.Primary);
+    .setStyle(ButtonStyle.Primary)
+    .setDisabled(doubledDown);
 
   const standButton = new ButtonBuilder()
     .setCustomId("blackjack_stand")
     .setLabel("Stand")
     .setStyle(ButtonStyle.Success);
 
-  return new ActionRowBuilder().addComponents(hitButton, standButton);
+  const doubleButton = new ButtonBuilder()
+    .setCustomId("blackjack_double")
+    .setLabel("Double Down")
+    .setStyle(ButtonStyle.Danger)
+    .setDisabled(playerHand.length !== 2 || doubledDown);
+
+  const splitButton = new ButtonBuilder()
+    .setCustomId("blackjack_split")
+    .setLabel("Split")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(
+      playerHand.length !== 2 ||
+        !canSplit(playerHand[0], playerHand[1]) ||
+        doubledDown
+    );
+
+  return new ActionRowBuilder().addComponents(
+    hitButton,
+    standButton,
+    doubleButton,
+    splitButton
+  );
 }
+
+function canSplit(card1, card2) {
+  return card1.value === card2.value;
+}
+
 // Main blackjack game function
 async function playBlackjack(message, bet) {
   const userId = message.author.id;
@@ -1395,14 +1595,19 @@ async function playBlackjack(message, bet) {
 
   // Check for player blackjack
   if (calculateHandValue(playerHand) === 21) {
-    const blackjackPayout = Math.floor(bet * 2 * userStats.multiplier);
+    const blackjackPayout = Math.floor(bet * 2.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
-      playerHand,
+      [
+        {
+          hand: playerHand,
+          result: "Blackjack! You win big!",
+          payout: blackjackPayout,
+        },
+      ],
       dealerHand,
       userStats,
-      "Blackjack! You win big!",
       blackjackPayout,
       bet,
       userId
@@ -1418,7 +1623,7 @@ async function playBlackjack(message, bet) {
     userStats,
     bet
   );
-  const row = createActionRow();
+  const row = createActionRow(playerHand, bet);
 
   const gameMessage = await message.reply({
     embeds: [initialEmbed],
@@ -1429,84 +1634,208 @@ async function playBlackjack(message, bet) {
     i.user.id === userId && i.customId.startsWith("blackjack_");
   const collector = gameMessage.createMessageComponentCollector({
     filter,
-    time: 30000,
+    time: 60000,
   });
 
-  collector.on("collect", async (i) => {
-    if (i.customId === "blackjack_hit") {
-      playerHand.push(dealCard(deck));
-      const playerValue = calculateHandValue(playerHand);
+  let hands = [playerHand];
+  let currentHandIndex = 0;
+  let bets = [bet];
+  let doubledDown = [false];
 
-      if (playerValue > 21) {
-        collector.stop("bust");
-      } else if (playerValue === 21) {
-        collector.stop("player21");
-      } else {
-        const newEmbed = createGameEmbed(
-          playerHand,
-          dealerHand,
-          deck,
-          false,
-          userStats,
-          bet
+  collector.on("collect", async (i) => {
+    switch (i.customId) {
+      case "blackjack_hit":
+        hands[currentHandIndex].push(dealCard(deck));
+        const playerValue = calculateHandValue(hands[currentHandIndex]);
+
+        if (playerValue > 21) {
+          if (currentHandIndex < hands.length - 1) {
+            currentHandIndex++;
+            const newEmbed = createGameEmbed(
+              hands[currentHandIndex],
+              dealerHand,
+              deck,
+              false,
+              userStats,
+              bets[currentHandIndex]
+            );
+            const newRow = createActionRow(
+              hands[currentHandIndex],
+              bets[currentHandIndex]
+            );
+            await i.update({ embeds: [newEmbed], components: [newRow] });
+          } else {
+            collector.stop("end");
+          }
+        } else if (playerValue === 21) {
+          if (currentHandIndex < hands.length - 1) {
+            currentHandIndex++;
+            const newEmbed = createGameEmbed(
+              hands[currentHandIndex],
+              dealerHand,
+              deck,
+              false,
+              userStats,
+              bets[currentHandIndex]
+            );
+            const newRow = createActionRow(
+              hands[currentHandIndex],
+              bets[currentHandIndex]
+            );
+            await i.update({ embeds: [newEmbed], components: [newRow] });
+          } else {
+            collector.stop("end");
+          }
+        } else {
+          const newEmbed = createGameEmbed(
+            hands[currentHandIndex],
+            dealerHand,
+            deck,
+            false,
+            userStats,
+            bets[currentHandIndex]
+          );
+          const newRow = createActionRow(
+            hands[currentHandIndex],
+            bets[currentHandIndex]
+          );
+          await i.update({ embeds: [newEmbed], components: [newRow] });
+        }
+        break;
+
+      case "blackjack_stand":
+        if (currentHandIndex < hands.length - 1) {
+          currentHandIndex++;
+          const newEmbed = createGameEmbed(
+            hands[currentHandIndex],
+            dealerHand,
+            deck,
+            false,
+            userStats,
+            bets[currentHandIndex]
+          );
+          const newRow = createActionRow(
+            hands[currentHandIndex],
+            bets[currentHandIndex]
+          );
+          await i.update({ embeds: [newEmbed], components: [newRow] });
+        } else {
+          collector.stop("end");
+        }
+        break;
+
+      case "blackjack_double":
+        bets[currentHandIndex] *= 2;
+        hands[currentHandIndex].push(dealCard(deck));
+        doubledDown[currentHandIndex] = true;
+        if (currentHandIndex < hands.length - 1) {
+          currentHandIndex++;
+          const newEmbed = createGameEmbed(
+            hands[currentHandIndex],
+            dealerHand,
+            deck,
+            false,
+            userStats,
+            bets[currentHandIndex]
+          );
+          const newRow = createActionRow(
+            hands[currentHandIndex],
+            bets[currentHandIndex]
+          );
+          await i.update({ embeds: [newEmbed], components: [newRow] });
+        } else {
+          collector.stop("end");
+        }
+        break;
+
+      case "blackjack_split":
+        if ((await getBalance(userId)) < bet) {
+          await i.reply({
+            content: "You don't have enough balance to split.",
+            ephemeral: true,
+          });
+          return;
+        }
+        await addBalance(userId, -bet);
+        const newHand = [hands[currentHandIndex].pop()];
+        hands[currentHandIndex].push(dealCard(deck));
+        newHand.push(dealCard(deck));
+        hands.push(newHand);
+        bets.push(bet);
+        doubledDown.push(false);
+        const splitEmbed = createSplitEmbed(hands, dealerHand, userStats, bets);
+        const splitRow = createActionRow(
+          hands[currentHandIndex],
+          bets[currentHandIndex]
         );
-        await i.update({ embeds: [newEmbed], components: [row] });
-      }
-    } else if (i.customId === "blackjack_stand") {
-      collector.stop("stand");
+        await i.update({ embeds: [splitEmbed], components: [splitRow] });
+        break;
     }
   });
 
   collector.on("end", async (collected, reason) => {
-    const playerValue = calculateHandValue(playerHand);
-    let dealerValue = calculateHandValue(dealerHand);
-    let result;
-    let payout = bet * userStats.multiplier;
+    playDealer(deck, dealerHand);
+    const dealerValue = calculateHandValue(dealerHand);
+    let results = [];
+    let totalPayout = 0;
 
-    if (reason === "player21" || playerValue === 21) {
-      result = "You win with 21!";
-      payout *= 1;
-      updateWinStreak(userId, true);
-    } else if (reason === "bust") {
-      result = "You bust! You lose!";
-      payout = -bet;
-      updateWinStreak(userId, false);
-    } else {
-      playDealer(deck, dealerHand);
-      dealerValue = calculateHandValue(dealerHand);
+    for (let i = 0; i < hands.length; i++) {
+      const playerValue = calculateHandValue(hands[i]);
+      let result;
+      let payout;
 
-      if (dealerValue > 21) {
+      if (playerValue > 21) {
+        result = "You bust! You lose!";
+        payout = -bets[i];
+      } else if (
+        playerValue === 21 &&
+        hands[i].length === 2 &&
+        !doubledDown[i]
+      ) {
+        result = "Blackjack! You win!";
+        payout = bets[i] * 1.5;
+      } else if (dealerValue > 21) {
         result = "Dealer busts! You win!";
-        updateWinStreak(userId, true);
+        payout = bets[i];
       } else if (playerValue > dealerValue) {
         result = "You win!";
-        updateWinStreak(userId, true);
+        payout = bets[i];
       } else if (playerValue < dealerValue) {
         result = "You lose!";
-        payout = -bet;
-        updateWinStreak(userId, false);
+        payout = -bets[i];
       } else {
         result = "It's a tie!";
         payout = 0;
-        // Don't update win streak on tie
       }
+
+      // Apply multiplier only to winnings, not losses or ties
+      if (payout > 0) {
+        payout *= userStats.multiplier;
+      }
+
+      totalPayout += payout;
+      results.push({
+        hand: hands[i],
+        result,
+        payout,
+        doubledDown: doubledDown[i],
+      });
     }
 
-    await addBalance(userId, Math.floor(payout));
+    await addBalance(userId, Math.floor(totalPayout));
+    updateWinStreak(userId, totalPayout > 0);
 
     const finalEmbed = await createFinalEmbed(
-      playerHand,
+      results,
       dealerHand,
       userStats,
-      result,
-      payout,
+      totalPayout,
       bet,
       userId
     );
     await gameMessage.edit({ embeds: [finalEmbed], components: [] });
   });
 }
-
 async function getUserPrinters(userId) {
   const userItems = await UserItems.findAll({
     where: { user_id: userId },
@@ -1649,6 +1978,95 @@ client.on("interactionCreate", async (interaction) => {
     // Start a new game
     await playCoinflip(interaction.message, userId, bet);
   }
+
+  if (interaction.customId.startsWith("upgrade_")) {
+    const [, printerId, upgradeType] = interaction.customId.split("_");
+
+    const user = await Users.findOne({
+      where: { user_id: interaction.user.id },
+    });
+    const printer = await UserItems.findOne({
+      where: { user_id: interaction.user.id, item_id: printerId },
+      include: ["item"],
+    });
+
+    const upgradeFieldMap = {
+      speed: "speed_level",
+      output: "output_level",
+      capacity: "capacity_level",
+    };
+
+    const upgradeField = upgradeFieldMap[upgradeType];
+
+    if (!upgradeField) {
+      return interaction.reply({
+        content: `Invalid upgrade type: ${upgradeType}`,
+        ephemeral: true,
+      });
+    }
+
+    const currentLevel = printer.dataValues[upgradeField];
+
+    const upgrade = await CurrencyShop.findOne({
+      where: {
+        type: "upgrade",
+        upgrade_type: upgradeType,
+        applies_to: printer.item.name,
+      },
+    });
+
+    if (!upgrade) {
+      return interaction.reply({
+        content: `No upgrade found for ${upgradeType}`,
+        ephemeral: true,
+      });
+    }
+
+    const nextLevel = currentLevel + 1;
+    const upgradeCost = calculateUpgradeCost(upgrade.cost, nextLevel);
+
+    if (currentLevel >= upgrade.max_level) {
+      return interaction.reply({
+        content: "This upgrade is already at max level.",
+        ephemeral: true,
+      });
+    }
+
+    if (user.bank_balance < upgradeCost) {
+      return interaction.reply({
+        content: "You don't have enough money for this upgrade.",
+        ephemeral: true,
+      });
+    }
+
+    // Perform the upgrade
+    await UserItems.update(
+      {
+        [upgradeField]: nextLevel,
+        total_upgrade_cost: printer.total_upgrade_cost + upgradeCost,
+      },
+      { where: { user_id: interaction.user.id, item_id: printerId } }
+    );
+    await addBankBalance(interaction.user.id, -upgradeCost);
+
+    // Fetch the updated printer and user data
+    const updatedPrinter = await UserItems.findOne({
+      where: { user_id: interaction.user.id, item_id: printerId },
+      include: ["item"],
+    });
+    const updatedUser = await Users.findOne({
+      where: { user_id: interaction.user.id },
+    });
+
+    // Create an updated embed and buttons
+    const { embed, row } = await createUpgradeEmbed(
+      updatedPrinter,
+      updatedUser
+    );
+
+    // Update the message with the new embed and buttons
+    await interaction.update({ embeds: [embed], components: [row] });
+  }
 });
 
 async function calculatePrinterMoney(printers) {
@@ -1656,83 +2074,64 @@ async function calculatePrinterMoney(printers) {
   const printerDetails = [];
 
   for (const printer of printers) {
+    const baseRate = getPrinterBaseRate(printer.item.name);
+    const baseInterval = 2.5; // Base print interval in minutes
+
+    const interval = calculateSpeedUpgrade(baseInterval, printer.speed_level);
+    let outputBoost = calculateUpgradeEffect(
+      baseRate,
+      0.225,
+      printer.output_level
+    );
+    const capacity = calculateCapacity(baseRate, printer.capacity_level);
+
     const minutesSinceLastCollection =
       (Date.now() - printer.last_collected) / (1000 * 60);
-    let generatedAmount = 0;
+    const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    switch (printer.item.name) {
-      case "Bronze Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 1 * printer.amount;
-        break;
-      case "Silver Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 2 * printer.amount;
-        break;
-      case "Gold Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 5 * printer.amount;
-        break;
-      case "Platinum Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 10 * printer.amount;
-        break;
-      case "Diamond Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 25 * printer.amount;
-        break;
-      case "Quantum Printer":
-        generatedAmount =
-          Math.floor(minutesSinceLastCollection) * 50 * printer.amount;
-        break;
-      default:
-        generatedAmount = 0;
-        break;
-    }
+    const generatedAmount = outputBoost * cycles * printer.amount;
+    const actualGenerated = Math.min(generatedAmount, capacity);
 
-    totalReady += generatedAmount;
-    printerDetails.push(
-      `${printer.item.name}: 🪙 ${Math.floor(generatedAmount).toLocaleString()}`
-    );
+    outputBoost =
+      outputBoost % 1 !== 0 ? outputBoost.toFixed(1) : outputBoost.toFixed(0);
+
+    totalReady += actualGenerated;
+    printerDetails.push({
+      name: printer.item.name,
+      generated: Math.floor(actualGenerated),
+      capacity: capacity,
+      interval: interval,
+      outputPerCycle: outputBoost,
+      amount: printer.amount,
+    });
   }
 
   return { totalReady, printerDetails };
 }
-
 async function collectPrinterMoney(userId) {
   const printers = await getUserPrinters(userId);
   let totalGenerated = 0;
 
   for (const printer of printers) {
+    const baseRate = getPrinterBaseRate(printer.item.name);
+    const baseInterval = 2.5; // Base print interval in minutes
+
+    const interval = calculateSpeedUpgrade(baseInterval, printer.speed_level);
+    const outputBoost = calculateUpgradeEffect(
+      baseRate,
+      0.225,
+      printer.output_level
+    );
+    const capacity = calculateCapacity(baseRate, printer.capacity_level);
+
     const minutesSinceLastCollection =
       (Date.now() - printer.last_collected) / (1000 * 60);
-    let generatedAmount = 0;
+    const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    switch (printer.item.name) {
-      case "Bronze Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 1;
-        break;
-      case "Silver Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 2;
-        break;
-      case "Gold Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 5;
-        break;
-      case "Platinum Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 10;
-        break;
-      case "Diamond Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 25;
-        break;
-      case "Quantum Printer":
-        generatedAmount = Math.floor(minutesSinceLastCollection) * 50;
-        break;
-      default:
-        generatedAmount = 0;
-        break;
-    }
+    const generatedAmount = outputBoost * cycles * printer.amount;
+    const actualGenerated = Math.min(generatedAmount, capacity);
 
-    totalGenerated += Math.floor(generatedAmount * printer.amount);
+    totalGenerated += actualGenerated;
 
     await UserItems.update(
       { last_collected: Date.now() },
@@ -1740,9 +2139,12 @@ async function collectPrinterMoney(userId) {
     );
   }
 
+  totalGenerated = Math.floor(totalGenerated);
+
   await addBalance(userId, totalGenerated);
   return totalGenerated;
 }
+
 async function transferMoney(senderId, receiverId, amount) {
   const sender = await Users.findOne({ where: { user_id: senderId } });
   const receiver = await Users.findOne({ where: { user_id: receiverId } });
@@ -1784,7 +2186,13 @@ async function calculateNetWorth(userId) {
   });
 
   const itemValue = items.reduce((total, userItem) => {
-    return total + userItem.item.cost * userItem.amount;
+    // Include the base cost of the item
+    const baseCost = userItem.item.cost * userItem.amount;
+
+    // Include the total upgrade cost
+    const upgradeCost = userItem.total_upgrade_cost;
+
+    return total + baseCost + upgradeCost;
   }, 0);
 
   return user.balance + user.bank_balance + itemValue;
@@ -1869,7 +2277,7 @@ const PAYOUTS = {
   "💰💰💰": 60,
   "👑👑👑": 75,
   "7️⃣7️⃣7️⃣": 100,
-  ANY2: 1.25, // Any 2 matching symbols
+  ANY2: 1.5, // Any 2 matching symbols
 };
 
 function spinSlots() {
@@ -2135,4 +2543,149 @@ function createPayoutEmbed() {
 async function handleSlotsPayout(message) {
   const embed = createPayoutEmbed();
   await message.reply({ embeds: [embed] });
+}
+
+function calculateUpgradeCost(baseCost, level) {
+  return Math.round(baseCost * Math.pow(1.3, level - 1));
+}
+
+function getPrinterBaseRate(printerName) {
+  const rates = {
+    "Bronze Printer": 1,
+    "Silver Printer": 3,
+    "Gold Printer": 6,
+    "Platinum Printer": 15,
+    "Titanium Printer": 25,
+    "Diamond Printer": 40,
+    "Quantum Printer": 100,
+    "Neutronium Printer": 250,
+  };
+  return rates[printerName] || 1;
+}
+
+function calculateUpgradeEffect(baseEffect, increasePerLevel, level) {
+  if (level === 0) return baseEffect;
+  return baseEffect * Math.pow(1 + increasePerLevel, level);
+}
+
+function calculateSpeedUpgrade(baseInterval, level) {
+  const maxReduction = 0.8; // Maximum 75% reduction
+  const reductionPerLevel = 0.16; // 5% reduction per level
+  const reduction = Math.min(maxReduction, reductionPerLevel * level);
+  return baseInterval * (1 - reduction);
+}
+
+function calculateCapacity(baseRate, level) {
+  const baseCapacity = baseRate * 100;
+  const multiplier = 1.5; // Exponential growth multiplier
+  const increase = baseCapacity * Math.pow(multiplier, level); // Exponential increase
+  return Math.floor(increase);
+}
+
+function formatTime(minutes) {
+  const mins = Math.floor(minutes);
+  const secs = Math.round((minutes - mins) * 60);
+  return `${mins}m ${secs}s`;
+}
+
+async function createUpgradeEmbed(printer, user) {
+  const embed = new EmbedBuilder()
+    .setColor("#0099ff")
+    .setTitle(`🖨️ Upgrade ${printer.item.name}`)
+    .setDescription("Choose an upgrade to improve your printer:")
+    .setFooter({ text: "Azus Bot • Click a button to upgrade" })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder();
+
+  const upgradeEmojis = {
+    speed: "⚡",
+    output: "💰",
+    capacity: "📦",
+  };
+
+  const upgrades = await CurrencyShop.findAll({
+    where: {
+      type: "upgrade",
+      applies_to: printer.item.name,
+    },
+  });
+
+  for (const upgrade of upgrades) {
+    const currentLevel = printer[`${upgrade.upgrade_type}_level`];
+    const nextLevel = currentLevel + 1;
+    const upgradeCost = calculateUpgradeCost(upgrade.cost, nextLevel);
+
+    const baseRate = getPrinterBaseRate(printer.item.name);
+    let currentEffect, nextEffect;
+
+    if (upgrade.upgrade_type === "speed") {
+      const baseInterval = 2.5;
+      currentEffect = formatTime(
+        calculateSpeedUpgrade(baseInterval, currentLevel)
+      );
+      nextEffect = formatTime(calculateSpeedUpgrade(baseInterval, nextLevel));
+    } else if (upgrade.upgrade_type === "output") {
+      currentEffect = calculateUpgradeEffect(
+        baseRate,
+        0.225,
+        currentLevel
+      ).toFixed(1);
+      nextEffect = calculateUpgradeEffect(baseRate, 0.225, nextLevel).toFixed(
+        1
+      );
+    } else if (upgrade.upgrade_type === "capacity") {
+      currentEffect = calculateCapacity(baseRate, currentLevel);
+      nextEffect = calculateCapacity(baseRate, nextLevel);
+    }
+
+    const emoji = upgradeEmojis[upgrade.upgrade_type];
+    const upgradeName =
+      upgrade.upgrade_type.charAt(0).toUpperCase() +
+      upgrade.upgrade_type.slice(1);
+
+    let upgradeStatus;
+    if (currentLevel >= upgrade.max_level) {
+      upgradeStatus = `✨ MAX LEVEL (${currentLevel}/${upgrade.max_level}) ✨`;
+    } else if (user.bank_balance < upgradeCost) {
+      upgradeStatus = `❌ Insufficient Funds (${currentLevel}/${upgrade.max_level})`;
+    } else {
+      upgradeStatus = `✅ Available (${currentLevel}/${upgrade.max_level})`;
+    }
+
+    embed.addFields({
+      name: `${emoji} ${upgradeName} Upgrade`,
+      value: [
+        `\`\`\`${upgradeStatus}\`\`\``,
+        `Effect: ${currentEffect}${
+          currentLevel < upgrade.max_level ? ` ➜ ${nextEffect}` : ""
+        }`,
+        currentLevel < upgrade.max_level
+          ? `Cost: 🪙 ${upgradeCost.toLocaleString()}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"), // filter(Boolean) removes any empty strings
+      inline: false,
+    });
+
+    const button = new ButtonBuilder()
+      .setCustomId(`upgrade_${printer.item_id}_${upgrade.upgrade_type}`)
+      .setLabel(`Upgrade ${upgradeName}`)
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(
+        currentLevel >= upgrade.max_level || user.bank_balance < upgradeCost
+      )
+      .setEmoji(emoji);
+
+    row.addComponents(button);
+  }
+
+  embed.addFields({
+    name: "Your Bank Balance",
+    value: `🪙 ${user.bank_balance.toLocaleString()}`,
+    inline: false,
+  });
+
+  return { embed, row };
 }
