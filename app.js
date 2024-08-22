@@ -892,7 +892,7 @@ client.on("messageCreate", async (message) => {
 
           embed.addFields({
             name: "Total Ready to Collect",
-            value: `🪙 ${Math.floor(printerMoney.totalReady.toLocaleString())}`,
+            value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
             inline: false,
           });
         }
@@ -1403,11 +1403,7 @@ function createGameEmbed(
       },
       { name: "\u200B", value: "\u200B" },
       { name: "Your Value", value: playerValue.toString(), inline: true },
-      {
-        name: "Dealer Value",
-        value: dealerValue.toString(),
-        inline: true,
-      },
+      { name: "Dealer Value", value: dealerValue.toString(), inline: true },
       { name: "Bet", value: `🪙${bet}`, inline: true },
       {
         name: "Win Streak",
@@ -1488,17 +1484,15 @@ async function createFinalEmbed(
 
   results.forEach((result, index) => {
     const playerValue = calculateHandValue(result.hand);
+    const handName =
+      results.length > 1 ? `Your Hand ${index + 1}` : "Your Hand";
     embed.addFields(
       {
-        name: `Your Hand ${index + 1}${result.doubledDown ? " (Doubled)" : ""}`,
+        name: `${handName}${result.doubledDown ? " (Doubled)" : ""}`,
         value: result.hand.map(createCardEmoji).join(" ") + ` (${playerValue})`,
         inline: true,
       },
-      {
-        name: "Result",
-        value: result.result,
-        inline: true,
-      },
+      { name: "Result", value: result.result, inline: true },
       {
         name: "Payout",
         value: `🪙 ${Math.abs(result.payout).toLocaleString()}`,
@@ -1540,7 +1534,12 @@ async function createFinalEmbed(
 
   return embed;
 }
-function createActionRow(playerHand, bet, doubledDown = false) {
+function createActionRow(
+  playerHand,
+  bet,
+  doubledDown = false,
+  canSplit = true
+) {
   const hitButton = new ButtonBuilder()
     .setCustomId("blackjack_hit")
     .setLabel("Hit")
@@ -1564,7 +1563,8 @@ function createActionRow(playerHand, bet, doubledDown = false) {
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(
       playerHand.length !== 2 ||
-        !canSplit(playerHand[0], playerHand[1]) ||
+        !canSplit ||
+        !canSplitHand(playerHand[0], playerHand[1]) ||
         doubledDown
     );
 
@@ -1576,12 +1576,16 @@ function createActionRow(playerHand, bet, doubledDown = false) {
   );
 }
 
+function canSplitHand(card1, card2) {
+  return card1.value === card2.value;
+}
+
 function canSplit(card1, card2) {
   return card1.value === card2.value;
 }
 
 // Main blackjack game function
-async function playBlackjack(message, bet) {
+async function playBlackjack(message, initialBet) {
   const userId = message.author.id;
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
@@ -1590,18 +1594,22 @@ async function playBlackjack(message, bet) {
   const deck = createDeck();
   shuffleDeck(deck);
 
-  const playerHand = [dealCard(deck), dealCard(deck)];
+  let hands = [[dealCard(deck), dealCard(deck)]];
   const dealerHand = [dealCard(deck), dealCard(deck)];
+  let bets = [initialBet];
+  let currentHandIndex = 0;
+  let doubledDown = [false];
+  let splitCount = 0;
 
   // Check for player blackjack
-  if (calculateHandValue(playerHand) === 21) {
-    const blackjackPayout = Math.floor(bet * 2.5 * userStats.multiplier);
+  if (calculateHandValue(hands[0]) === 21) {
+    const blackjackPayout = Math.floor(initialBet * 2.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
       [
         {
-          hand: playerHand,
+          hand: hands[0],
           result: "Blackjack! You win big!",
           payout: blackjackPayout,
         },
@@ -1609,21 +1617,21 @@ async function playBlackjack(message, bet) {
       dealerHand,
       userStats,
       blackjackPayout,
-      bet,
+      initialBet,
       userId
     );
     return message.reply({ embeds: [finalEmbed] });
   }
 
   const initialEmbed = createGameEmbed(
-    playerHand,
+    hands[0],
     dealerHand,
     deck,
     false,
     userStats,
-    bet
+    initialBet
   );
-  const row = createActionRow(playerHand, bet);
+  const row = createActionRow(hands[0], initialBet);
 
   const gameMessage = await message.reply({
     embeds: [initialEmbed],
@@ -1637,139 +1645,75 @@ async function playBlackjack(message, bet) {
     time: 60000,
   });
 
-  let hands = [playerHand];
-  let currentHandIndex = 0;
-  let bets = [bet];
-  let doubledDown = [false];
-
   collector.on("collect", async (i) => {
     switch (i.customId) {
       case "blackjack_hit":
         hands[currentHandIndex].push(dealCard(deck));
-        const playerValue = calculateHandValue(hands[currentHandIndex]);
-
-        if (playerValue > 21) {
-          if (currentHandIndex < hands.length - 1) {
-            currentHandIndex++;
-            const newEmbed = createGameEmbed(
-              hands[currentHandIndex],
-              dealerHand,
-              deck,
-              false,
-              userStats,
-              bets[currentHandIndex]
-            );
-            const newRow = createActionRow(
-              hands[currentHandIndex],
-              bets[currentHandIndex]
-            );
-            await i.update({ embeds: [newEmbed], components: [newRow] });
-          } else {
-            collector.stop("end");
-          }
-        } else if (playerValue === 21) {
-          if (currentHandIndex < hands.length - 1) {
-            currentHandIndex++;
-            const newEmbed = createGameEmbed(
-              hands[currentHandIndex],
-              dealerHand,
-              deck,
-              false,
-              userStats,
-              bets[currentHandIndex]
-            );
-            const newRow = createActionRow(
-              hands[currentHandIndex],
-              bets[currentHandIndex]
-            );
-            await i.update({ embeds: [newEmbed], components: [newRow] });
-          } else {
-            collector.stop("end");
-          }
-        } else {
-          const newEmbed = createGameEmbed(
-            hands[currentHandIndex],
-            dealerHand,
-            deck,
-            false,
-            userStats,
-            bets[currentHandIndex]
-          );
-          const newRow = createActionRow(
-            hands[currentHandIndex],
-            bets[currentHandIndex]
-          );
-          await i.update({ embeds: [newEmbed], components: [newRow] });
-        }
-        break;
-
-      case "blackjack_stand":
-        if (currentHandIndex < hands.length - 1) {
+        if (calculateHandValue(hands[currentHandIndex]) >= 21) {
           currentHandIndex++;
-          const newEmbed = createGameEmbed(
-            hands[currentHandIndex],
-            dealerHand,
-            deck,
-            false,
-            userStats,
-            bets[currentHandIndex]
-          );
-          const newRow = createActionRow(
-            hands[currentHandIndex],
-            bets[currentHandIndex]
-          );
-          await i.update({ embeds: [newEmbed], components: [newRow] });
-        } else {
-          collector.stop("end");
         }
         break;
-
+      case "blackjack_stand":
+        currentHandIndex++;
+        break;
       case "blackjack_double":
+        // if ((await getBalance(userId)) < bets[currentHandIndex]) {
+        //   await i.reply({
+        //     content: "You don't have enough balance to double down.",
+        //     ephemeral: true,
+        //   });
+        //   return;
+        // }
+        // await addBalance(userId, -bets[currentHandIndex]);
         bets[currentHandIndex] *= 2;
         hands[currentHandIndex].push(dealCard(deck));
         doubledDown[currentHandIndex] = true;
-        if (currentHandIndex < hands.length - 1) {
-          currentHandIndex++;
-          const newEmbed = createGameEmbed(
-            hands[currentHandIndex],
-            dealerHand,
-            deck,
-            false,
-            userStats,
-            bets[currentHandIndex]
-          );
-          const newRow = createActionRow(
-            hands[currentHandIndex],
-            bets[currentHandIndex]
-          );
-          await i.update({ embeds: [newEmbed], components: [newRow] });
-        } else {
-          collector.stop("end");
-        }
+        currentHandIndex++;
         break;
-
       case "blackjack_split":
-        if ((await getBalance(userId)) < bet) {
+        if (splitCount >= 3) {
           await i.reply({
-            content: "You don't have enough balance to split.",
+            content: "You can only split up to 3 times.",
             ephemeral: true,
           });
           return;
         }
-        await addBalance(userId, -bet);
+        // if ((await getBalance(userId)) < initialBet) {
+        //   await i.reply({
+        //     content: "You don't have enough balance to split.",
+        //     ephemeral: true,
+        //   });
+        //   return;
+        // }
+        // await addBalance(userId, -initialBet);
         const newHand = [hands[currentHandIndex].pop()];
         hands[currentHandIndex].push(dealCard(deck));
         newHand.push(dealCard(deck));
-        hands.push(newHand);
-        bets.push(bet);
-        doubledDown.push(false);
-        const splitEmbed = createSplitEmbed(hands, dealerHand, userStats, bets);
-        const splitRow = createActionRow(
-          hands[currentHandIndex],
-          bets[currentHandIndex]
-        );
-        await i.update({ embeds: [splitEmbed], components: [splitRow] });
+        hands.splice(currentHandIndex + 1, 0, newHand);
+        bets.splice(currentHandIndex + 1, 0, initialBet);
+        doubledDown.splice(currentHandIndex + 1, 0, false);
+        splitCount++;
         break;
+    }
+
+    if (currentHandIndex < hands.length) {
+      const newEmbed = createGameEmbed(
+        hands[currentHandIndex],
+        dealerHand,
+        deck,
+        false,
+        userStats,
+        bets[currentHandIndex]
+      );
+      const newRow = createActionRow(
+        hands[currentHandIndex],
+        bets[currentHandIndex],
+        doubledDown[currentHandIndex],
+        splitCount < 3
+      );
+      await i.update({ embeds: [newEmbed], components: [newRow] });
+    } else {
+      collector.stop("end");
     }
   });
 
@@ -1808,7 +1752,6 @@ async function playBlackjack(message, bet) {
         payout = 0;
       }
 
-      // Apply multiplier only to winnings, not losses or ties
       if (payout > 0) {
         payout *= userStats.multiplier;
       }
@@ -1830,18 +1773,11 @@ async function playBlackjack(message, bet) {
       dealerHand,
       userStats,
       totalPayout,
-      bet,
+      initialBet,
       userId
     );
     await gameMessage.edit({ embeds: [finalEmbed], components: [] });
   });
-}
-async function getUserPrinters(userId) {
-  const userItems = await UserItems.findAll({
-    where: { user_id: userId },
-    include: ["item"],
-  });
-  return userItems.filter((item) => allPrinters.includes(item.item.name));
 }
 
 // Add this to your interaction handler
@@ -2688,4 +2624,12 @@ async function createUpgradeEmbed(printer, user) {
   });
 
   return { embed, row };
+}
+
+async function getUserPrinters(userId) {
+  const userItems = await UserItems.findAll({
+    where: { user_id: userId },
+    include: ["item"],
+  });
+  return userItems.filter((item) => allPrinters.includes(item.item.name));
 }
