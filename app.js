@@ -1468,7 +1468,10 @@ async function createFinalEmbed(
   initialBet,
   userId
 ) {
-  const dealerValue = calculateHandValue(dealerHand);
+  const allPlayersBusted = results.every((result) => result.busted);
+  const dealerValue = allPlayersBusted
+    ? getCardValue(dealerHand[0])
+    : calculateHandValue(dealerHand);
   const newBalance = await getBalance(userId);
 
   const embed = new EmbedBuilder()
@@ -1478,7 +1481,9 @@ async function createFinalEmbed(
     .setTitle("Blackjack Result")
     .addFields({
       name: "Dealer Hand",
-      value: dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`,
+      value: allPlayersBusted
+        ? `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValue})`
+        : dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`,
       inline: false,
     });
 
@@ -1584,7 +1589,6 @@ function canSplit(card1, card2) {
   return card1.value === card2.value;
 }
 
-// Main blackjack game function
 async function playBlackjack(message, initialBet) {
   const userId = message.author.id;
   const userStats = blackjackStats.get(userId) || {
@@ -1657,14 +1661,6 @@ async function playBlackjack(message, initialBet) {
         currentHandIndex++;
         break;
       case "blackjack_double":
-        // if ((await getBalance(userId)) < bets[currentHandIndex]) {
-        //   await i.reply({
-        //     content: "You don't have enough balance to double down.",
-        //     ephemeral: true,
-        //   });
-        //   return;
-        // }
-        // await addBalance(userId, -bets[currentHandIndex]);
         bets[currentHandIndex] *= 2;
         hands[currentHandIndex].push(dealCard(deck));
         doubledDown[currentHandIndex] = true;
@@ -1678,14 +1674,6 @@ async function playBlackjack(message, initialBet) {
           });
           return;
         }
-        // if ((await getBalance(userId)) < initialBet) {
-        //   await i.reply({
-        //     content: "You don't have enough balance to split.",
-        //     ephemeral: true,
-        //   });
-        //   return;
-        // }
-        // await addBalance(userId, -initialBet);
         const newHand = [hands[currentHandIndex].pop()];
         hands[currentHandIndex].push(dealCard(deck));
         newHand.push(dealCard(deck));
@@ -1718,8 +1706,6 @@ async function playBlackjack(message, initialBet) {
   });
 
   collector.on("end", async (collected, reason) => {
-    playDealer(deck, dealerHand);
-    const dealerValue = calculateHandValue(dealerHand);
     let results = [];
     let totalPayout = 0;
 
@@ -1731,25 +1717,29 @@ async function playBlackjack(message, initialBet) {
       if (playerValue > 21) {
         result = "You bust! You lose!";
         payout = -bets[i];
-      } else if (
-        playerValue === 21 &&
-        hands[i].length === 2 &&
-        !doubledDown[i]
-      ) {
-        result = "Blackjack! You win!";
-        payout = bets[i] * 1.5;
-      } else if (dealerValue > 21) {
-        result = "Dealer busts! You win!";
-        payout = bets[i];
-      } else if (playerValue > dealerValue) {
-        result = "You win!";
-        payout = bets[i];
-      } else if (playerValue < dealerValue) {
-        result = "You lose!";
-        payout = -bets[i];
       } else {
-        result = "It's a tie!";
-        payout = 0;
+        // Only play the dealer's hand if the player hasn't busted
+        if (i === hands.length - 1) {
+          playDealer(deck, dealerHand);
+        }
+        const dealerValue = calculateHandValue(dealerHand);
+
+        if (playerValue === 21 && hands[i].length === 2 && !doubledDown[i]) {
+          result = "Blackjack! You win!";
+          payout = bets[i] * 1.5;
+        } else if (dealerValue > 21) {
+          result = "Dealer busts! You win!";
+          payout = bets[i];
+        } else if (playerValue > dealerValue) {
+          result = "You win!";
+          payout = bets[i];
+        } else if (playerValue < dealerValue) {
+          result = "You lose!";
+          payout = -bets[i];
+        } else {
+          result = "It's a tie!";
+          payout = 0;
+        }
       }
 
       if (payout > 0) {
@@ -1762,6 +1752,7 @@ async function playBlackjack(message, initialBet) {
         result,
         payout,
         doubledDown: doubledDown[i],
+        busted: playerValue > 21,
       });
     }
 
