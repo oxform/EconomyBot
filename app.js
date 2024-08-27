@@ -1271,6 +1271,10 @@ client.on("messageCreate", async (message) => {
         {
           name: "📊 Leaderboard",
           value: "`!leaderboard` (or `!lb`) - View the richest users",
+        },
+        {
+          name: "🕒 Cooldowns",
+          value: "`!cooldowns` (or `!cd`) - Check your activity cooldowns",
         }
       )
       .setFooter({
@@ -1330,6 +1334,8 @@ client.on("messageCreate", async (message) => {
       return message.reply("You can't heist yourself!");
     }
     await handleHeist(message, targetUser);
+  } else if (commandName === "cooldowns" || commandName === "cd") {
+    await handleCooldowns(message);
   }
 });
 
@@ -1461,49 +1467,6 @@ function createGameEmbed(
       }
     );
 }
-
-function createSplitEmbed(hands, dealerHand, userStats, bets) {
-  const embed = new EmbedBuilder()
-    .setColor("#2C2F33")
-    .setTitle("Blackjack - Split Hands")
-    .setDescription("You've split your hand. Play each hand separately.");
-
-  hands.forEach((hand, index) => {
-    const handValue = calculateHandValue(hand);
-    embed.addFields({
-      name: `Hand ${index + 1}`,
-      value: hand.map(createCardEmoji).join(" ") + ` (${handValue})`,
-      inline: true,
-    });
-  });
-
-  const dealerValue = getCardValue(dealerHand[0]);
-  embed.addFields(
-    {
-      name: "Dealer Hand",
-      value: `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValue})`,
-      inline: false,
-    },
-    {
-      name: "Bets",
-      value: bets.map((bet) => `🪙${bet}`).join(", "),
-      inline: true,
-    },
-    {
-      name: "Win Streak",
-      value: userStats.winStreak.toString(),
-      inline: true,
-    },
-    {
-      name: "Multiplier",
-      value: userStats.multiplier.toFixed(1) + "x",
-      inline: true,
-    }
-  );
-
-  return embed;
-}
-
 async function createFinalEmbed(
   results,
   dealerHand,
@@ -3171,4 +3134,64 @@ function createHeistUpgradeButtons(upgradeInfo) {
   }
 
   return row;
+}
+
+async function handleCooldowns(message) {
+  const userId = message.author.id;
+  const user = await Users.findOne({ where: { user_id: userId } });
+
+  if (!user) {
+    return message.reply(
+      "You don't have an account yet. Start playing to see your cooldowns!"
+    );
+  }
+
+  const upgrades = await getUserHeistUpgrades(userId);
+  const heistCooldown = calculateHeistCooldown(
+    HEIST_COOLDOWN,
+    upgrades[HEIST_UPGRADES.COOLDOWN_REDUCTION] || 0
+  );
+
+  const now = Date.now();
+  const cooldowns = {
+    work: user.last_work
+      ? Math.max(0, 60 * 60 * 1000 - (now - user.last_work.getTime()))
+      : 0,
+    crime: user.last_crime
+      ? Math.max(0, 3 * 60 * 60 * 1000 - (now - user.last_crime.getTime()))
+      : 0,
+    daily: user.last_daily
+      ? Math.max(0, 16 * 60 * 60 * 1000 - (now - user.last_daily.getTime()))
+      : 0,
+    rob: user.last_rob
+      ? Math.max(0, 6 * 60 * 60 * 1000 - (now - user.last_rob.getTime()))
+      : 0,
+    heist: user.last_heist
+      ? Math.max(0, heistCooldown - (now - user.last_heist.getTime()))
+      : 0,
+  };
+
+  const formatTime = (ms) => {
+    if (ms === 0) return "Ready!";
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  };
+
+  const embed = new EmbedBuilder()
+    .setColor("#0099ff")
+    .setTitle("🕒 Your Cooldowns")
+    .setDescription("Here are your current cooldowns:")
+    .addFields(
+      { name: "💼 Work", value: formatTime(cooldowns.work), inline: true },
+      { name: "🦹 Crime", value: formatTime(cooldowns.crime), inline: true },
+      { name: "📅 Daily", value: formatTime(cooldowns.daily), inline: true },
+      { name: "💰 Rob", value: formatTime(cooldowns.rob), inline: true },
+      { name: "🏦 Heist", value: formatTime(cooldowns.heist), inline: true }
+    )
+    .setFooter({ text: "Azus Bot • Cooldowns update in real-time" })
+    .setTimestamp();
+
+  return message.reply({ embeds: [embed] });
 }
