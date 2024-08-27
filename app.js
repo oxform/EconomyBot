@@ -21,12 +21,8 @@ const client = new Client({
 });
 
 const bankAccounts = new Collection();
-const workCooldowns = new Collection();
 const interestCooldowns = new Collection();
-const crimeCooldowns = new Collection();
-const robCooldowns = new Map();
 const coinflipStats = new Map();
-const dailyCooldowns = new Map();
 const hoboCooldowns = new Map();
 const blackjackStats = new Map();
 
@@ -60,43 +56,39 @@ const allPrinters = [
 
 async function handleDaily(message) {
   const userId = message.author.id;
-  const now = Date.now();
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const now = new Date();
   const cooldownAmount = 16 * 60 * 60 * 1000; // 16 hours in milliseconds
   const dailyAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
 
-  if (dailyCooldowns.has(userId)) {
-    const expirationTime = dailyCooldowns.get(userId) + cooldownAmount;
+  if (user.last_daily && now - user.last_daily < cooldownAmount) {
+    const timeLeft = (user.last_daily.getTime() + cooldownAmount - now) / 1000;
+    const hours = Math.floor(timeLeft / 3600);
+    const minutes = Math.floor((timeLeft % 3600) / 60);
 
-    if (now < expirationTime) {
-      const timeLeft = (expirationTime - now) / 1000;
-      const hours = Math.floor(timeLeft / 3600);
-      const minutes = Math.floor((timeLeft % 3600) / 60);
+    const embed = new EmbedBuilder()
+      .setColor("#ff9900")
+      .setTitle("Daily Reward - Not Ready")
+      .setDescription(`You've already claimed your daily reward.`)
+      .addFields({
+        name: "Time Remaining",
+        value: `${hours}h ${minutes}m`,
+        inline: true,
+      })
+      .setFooter({ text: "Azus Bot" })
+      .setTimestamp();
 
-      const embed = new EmbedBuilder()
-        .setColor("#ff9900")
-        .setTitle("Daily Reward - Not Ready")
-        .setDescription(`You've already claimed your daily reward.`)
-        .addFields({
-          name: "Time Remaining",
-          value: `${hours}h ${minutes}m`,
-          inline: true,
-        })
-        .setFooter({ text: "Azus Bot" })
-        .setTimestamp();
+    const sentMessage = await message.reply({ embeds: [embed] });
 
-      const sentMessage = await message.reply({ embeds: [embed] });
+    setTimeout(() => {
+      sentMessage.delete().catch(console.error);
+    }, 5000);
 
-      // Delete the message after 5 seconds
-      setTimeout(() => {
-        sentMessage.delete().catch(console.error);
-      }, 5000);
-
-      return;
-    }
+    return;
   }
 
   await addBalance(userId, dailyAmount);
-  dailyCooldowns.set(userId, now);
+  await Users.update({ last_daily: now }, { where: { user_id: userId } });
 
   const newBalance = await getBalance(userId);
 
@@ -150,43 +142,49 @@ async function handleCoinflip(message, args) {
     throw error; // Re-throw the error so it can be caught in the command handler
   }
 }
-function updateCrimeCooldown(userId) {
-  const now = Date.now();
-  const cooldownAmount = 3 * 60 * 60 * 1000;
+async function updateCrimeCooldown(userId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const now = new Date();
+  const cooldownAmount = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
 
-  if (crimeCooldowns.has(userId)) {
-    const expirationTime = crimeCooldowns.get(userId) + cooldownAmount;
+  if (user.last_crime) {
+    console.log("user", user);
+    const expirationTime = user.last_crime.getTime() + cooldownAmount;
 
-    if (now < expirationTime) {
-      const timeLeft = (expirationTime - now) / 1000 / 60; // Convert to minutes
+    if (now.getTime() < expirationTime) {
+      const timeLeft = (expirationTime - now.getTime()) / 1000 / 60; // Convert to minutes
       return Math.round(timeLeft);
     }
   }
 
-  crimeCooldowns.set(userId, now);
+  await Users.update({ last_crime: now }, { where: { user_id: userId } });
   return 0;
 }
 
-function updateRobCooldown(userId) {
-  const now = Date.now();
-  const cooldownAmount = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
+async function updateRobCooldown(userId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const now = new Date();
+  const cooldownAmount = 6 * 60 * 60 * 1000; // 3 hours in milliseconds
 
-  if (robCooldowns.has(userId)) {
-    const expirationTime = robCooldowns.get(userId) + cooldownAmount;
+  if (user.last_rob) {
+    const expirationTime = user.last_rob.getTime() + cooldownAmount;
 
-    if (now < expirationTime) {
-      const timeLeft = (expirationTime - now) / 1000 / 60 / 60; // Convert to hours
+    if (now.getTime() < expirationTime) {
+      const timeLeft = (expirationTime - now.getTime()) / 1000 / 60 / 60; // Convert to hours
       return Math.round(timeLeft * 10) / 10; // Round to 1 decimal place
     }
   }
 
-  robCooldowns.set(userId, now);
+  await Users.update({ last_rob: now }, { where: { user_id: userId } });
   return 0;
 }
 
 async function rob(robberId, targetId) {
   const target = await getFullBalance(targetId);
   const robber = await getFullBalance(robberId);
+
+  const robberTotal = robber.wallet + robber.bank;
+  const targetTotal = target.wallet + target.bank;
 
   if (target.wallet < 50) {
     return {
@@ -195,12 +193,18 @@ async function rob(robberId, targetId) {
     };
   }
 
-  const successChance = 0.9;
-  if (Math.random() < successChance) {
-    const minAmount = target.wallet * 0.25;
-    const maxAmount = target.wallet * 0.6;
-    const stolenAmount =
-      Math.floor(Math.random() * (maxAmount - minAmount + 1)) + minAmount;
+  // Adjust success chance based on wealth difference
+  const wealthRatio = robberTotal / targetTotal;
+  const baseSuccessChance = 0.7;
+  const adjustedSuccessChance =
+    baseSuccessChance * (1 / Math.sqrt(wealthRatio));
+
+  if (Math.random() < adjustedSuccessChance) {
+    const minAmount = target.wallet * 0.15;
+    const maxAmount = target.wallet * 0.4;
+    let stolenAmount = Math.random() * (maxAmount - minAmount + 1) + minAmount;
+    stolenAmount = Math.floor(stolenAmount);
+
     await addBalance(robberId, stolenAmount);
     await addBalance(targetId, -stolenAmount);
     return {
@@ -209,33 +213,50 @@ async function rob(robberId, targetId) {
       message: `You successfully robbed 🪙 ${stolenAmount}!`,
     };
   } else {
-    const penalty = Math.floor(robber.wallet * 0.1); // Lose 10% of your wallet if caught
-    await addBalance(robberId, -penalty);
+    let penalty;
+    if (robberTotal > targetTotal) {
+      // Richer robber loses more when failing
+      const penaltyRatio = Math.min(robberTotal / targetTotal, 10); // Cap at 10x
+      penalty = Math.floor(robber.wallet * 0.1 * penaltyRatio);
+    } else {
+      // Standard penalty for poorer or equal robbers
+      penalty = 0;
+    }
+
+    if (penalty > 0) {
+      await addBalance(robberId, -penalty);
+
+      return {
+        success: false,
+        amount: penalty,
+        message: `You were caught and fined 🪙 ${penalty}!`,
+      };
+    }
+
     return {
       success: false,
-      amount: penalty,
-      message: `You were caught and fined 🪙 ${penalty}!`,
+      message: "You were caught but you escaped without losing any money!",
     };
   }
 }
 
-function updateWorkCooldown(userId) {
-  const now = Date.now();
+async function updateWorkCooldown(userId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const now = new Date();
   const cooldownAmount = 60 * 60 * 1000; // 1 hour in milliseconds
 
-  if (workCooldowns.has(userId)) {
-    const expirationTime = workCooldowns.get(userId) + cooldownAmount;
+  if (user.last_work) {
+    const expirationTime = user.last_work.getTime() + cooldownAmount;
 
-    if (now < expirationTime) {
-      const timeLeft = (expirationTime - now) / 1000 / 60; // Convert to minutes
+    if (now.getTime() < expirationTime) {
+      const timeLeft = (expirationTime - now.getTime()) / 1000 / 60; // Convert to minutes
       return Math.round(timeLeft);
     }
   }
 
-  workCooldowns.set(userId, now);
+  await Users.update({ last_work: now }, { where: { user_id: userId } });
   return 0;
 }
-
 async function initializeBankAccounts() {
   const storedAccounts = await Users.findAll({
     where: { bank_balance: { [Op.gt]: 0 } },
@@ -371,10 +392,13 @@ async function calculateInterest(userId) {
 async function addBalance(id, amount) {
   const user = bankAccounts.get(id);
   if (user) {
-    user.balance += Number(amount);
+    user.balance += Math.floor(Number(amount));
 
     // Update database
-    await Users.update({ balance: user.balance }, { where: { user_id: id } });
+    await Users.update(
+      { balance: Math.floor(user.balance) },
+      { where: { user_id: id } }
+    );
 
     return user;
   }
@@ -391,11 +415,11 @@ async function addBalance(id, amount) {
 async function addBankBalance(id, amount) {
   const user = bankAccounts.get(id);
   if (user) {
-    user.bank_balance += Number(amount);
+    user.bank_balance += Math.floor(Number(amount));
 
     // Update database
     await Users.update(
-      { bank_balance: user.bank_balance },
+      { bank_balance: Math.floor(user.bank_balance) },
       { where: { user_id: id } }
     );
 
@@ -440,7 +464,7 @@ async function getFullBalance(userId) {
 
 async function getBalance(userId) {
   const user = bankAccounts.get(userId);
-  return user ? user.balance : 0;
+  return user ? Math.floor(user.balance) : 0;
 }
 
 async function getBankBalance(userId) {
@@ -611,7 +635,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   } // Updated work command
   else if (commandName === "work") {
-    const cooldownLeft = updateWorkCooldown(message.author.id);
+    const cooldownLeft = await updateWorkCooldown(message.author.id);
 
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
@@ -644,7 +668,8 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   } else if (commandName === "crime") {
-    const cooldownLeft = updateCrimeCooldown(message.author.id);
+    const cooldownLeft = await updateCrimeCooldown(message.author.id);
+    console.log("cooldownLeft", cooldownLeft);
 
     if (cooldownLeft > 0) {
       const hours = Math.floor(cooldownLeft / 60);
@@ -940,7 +965,7 @@ client.on("messageCreate", async (message) => {
       return message.reply("You can't rob yourself!");
     }
 
-    const cooldownLeft = updateRobCooldown(message.author.id);
+    const cooldownLeft = await updateRobCooldown(message.author.id);
 
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
@@ -1095,7 +1120,32 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   } else if (commandName === "transfer") {
+    // if user is "myola" then return
+    if (message.author.id === "174087056211968000") {
+      return;
+    }
     const recipient = message.mentions.users.first();
+
+    if (!recipient) {
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("Invalid Transfer")
+        .setDescription("Please use the format: !transfer @user amount")
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
+    if (!args[1]) {
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("Invalid Transfer")
+        .setDescription("Please specify an amount to transfer.")
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
     const amountArg = args[1].toLowerCase();
 
     if (!recipient) {
@@ -1172,85 +1222,64 @@ client.on("messageCreate", async (message) => {
     const embed = new EmbedBuilder()
       .setColor("#0099ff")
       .setTitle("Azus Bot Commands")
-      .setDescription("Here's a list of available commands:")
+      .setDescription("Here's a list of available commands.")
       .addFields(
         {
-          name: "!balance (or !bal)",
-          value: "Check your balance",
-          inline: true,
-        },
-        { name: "!work", value: "Earn money by working", inline: true },
-        {
-          name: "!crime",
-          value: "Attempt a crime for money (risky)",
-          inline: true,
-        },
-        {
-          name: "!deposit <amount>",
-          value: "Deposit money into your bank",
-          inline: true,
+          name: "💰 Economy",
+          value: [
+            "`!balance` (or `!bal`) - Check your balance",
+            "`!work` - Earn money by working",
+            "`!crime` - Attempt a crime for money (risky)",
+            "`!daily` - Collect your daily reward",
+            "`!hobo` - Beg for money when you're broke",
+          ].join("\n"),
         },
         {
-          name: "!withdraw <amount>",
-          value: "Withdraw money from your bank",
-          inline: true,
+          name: "🏦 Banking",
+          value: [
+            "`!deposit <amount>` - Deposit money into your bank",
+            "`!withdraw <amount>` - Withdraw money from your bank",
+            "`!transfer @user <amount>` - Transfer money to another user",
+          ].join("\n"),
         },
         {
-          name: "!transfer @user <amount>",
-          value: "Transfer money to another user",
-          inline: true,
+          name: "🎰 Gambling",
+          value: [
+            "`!blackjack <bet>` (or `!bj`) - Play a game of blackjack",
+            "`!coinflip <bet>` (or `!cf`) - Flip a coin and bet on the outcome",
+            "`!slots <bet>` - Play the slot machine",
+            "`!slotspayout` - View the payout table for slots",
+          ].join("\n"),
         },
         {
-          name: "!rob @user",
-          value: "Attempt to rob another user",
-          inline: true,
-        },
-        { name: "!shop", value: "View the item shop", inline: true },
-        {
-          name: "!buy <item>",
-          value: "Purchase an item from the shop",
-          inline: true,
+          name: "🛒 Shop & Inventory",
+          value: [
+            "`!shop` - View the item shop",
+            "`!buy <item>` - Purchase an item from the shop",
+            "`!inventory` - View your inventory",
+            "`!upgrade <printer>` - Upgrade your printer for more money",
+          ].join("\n"),
         },
         {
-          name: "!upgrade <printer>",
-          value: "Upgrade your printer for more money",
-          inline: true,
-        },
-        { name: "!inventory", value: "View your inventory", inline: true },
-        {
-          name: "!leaderboard (or !lb)",
-          value: "View the richest users",
-          inline: true,
+          name: "🦹 Heists & Robbery",
+          value: [
+            "`!rob @user` - Attempt to rob another user",
+            "`!heist @user` - Attempt a heist on another user's bank",
+            "`!upgrade heist` - Upgrade your heist equipment",
+          ].join("\n"),
         },
         {
-          name: "!blackjack <bet> (or !bj)",
-          value: "Play a game of blackjack",
-          inline: true,
-        },
-        {
-          name: "!coinflip <bet> (or !cf)",
-          value: "Flip a coin and bet on the outcome",
-          inline: true,
-        },
-        { name: "!daily", value: "Collect your daily reward", inline: true },
-        {
-          name: "!hobo",
-          value: "Beg for money when you're broke",
-          inline: true,
-        },
-        { name: "!slots <bet>", value: "Play the slot machine", inline: true },
-        {
-          name: "!slotspayout",
-          value: "View the payout table for slots",
-          inline: true,
+          name: "📊 Leaderboard",
+          value: "`!leaderboard` (or `!lb`) - View the richest users",
         }
       )
-      .setFooter({ text: "Azus Bot" })
+      .setFooter({
+        text: "Azus Bot • Use !help <command> for more details on a specific command",
+      })
       .setTimestamp();
 
     return message.reply({ embeds: [embed] });
-  }
-  if (commandName === "slots") {
+  } else if (commandName === "slots") {
     try {
       await handleSlots(message, args);
     } catch (error) {
@@ -1261,8 +1290,9 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "slotspayout") {
     await handleSlotsPayout(message);
-  }
-  if (commandName === "upgrade") {
+  } else if (commandName === "upgrade" && args[0]?.toLowerCase() === "heist") {
+    await handleHeistUpgrade(message, args);
+  } else if (commandName === "upgrade") {
     let printerName = args.join(" ");
     printerName = args
       .map((arg) => arg.charAt(0).toUpperCase() + arg.slice(1))
@@ -1291,6 +1321,15 @@ client.on("messageCreate", async (message) => {
     const { embed, row } = await createUpgradeEmbed(printer, user);
 
     return message.reply({ embeds: [embed], components: [row] });
+  } else if (commandName === "heist") {
+    const targetUser = message.mentions.users.first();
+    if (!targetUser) {
+      return message.reply("Please mention a user to heist.");
+    }
+    if (targetUser.id === message.author.id) {
+      return message.reply("You can't heist yourself!");
+    }
+    await handleHeist(message, targetUser);
   }
 });
 
@@ -1354,18 +1393,23 @@ function createCardEmoji(card) {
   return `${card.value}${suitEmojis[card.suit]}`;
 }
 
-function updateWinStreak(userId, won) {
+function updateWinStreak(userId, totalPayout) {
+  const won = totalPayout > 0;
+  const tie = totalPayout === 0;
+
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
     multiplier: 1,
   };
+
   if (won) {
     userStats.winStreak++;
     userStats.multiplier = Math.min(1 + userStats.winStreak * 0.1, 2); // Cap at 2x
-  } else {
+  } else if (!tie) {
     userStats.winStreak = 0;
     userStats.multiplier = 1;
   }
+
   blackjackStats.set(userId, userStats);
 }
 
@@ -1607,7 +1651,7 @@ async function playBlackjack(message, initialBet) {
 
   // Check for player blackjack
   if (calculateHandValue(hands[0]) === 21) {
-    const blackjackPayout = Math.floor(initialBet * 2.5 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
@@ -1719,7 +1763,7 @@ async function playBlackjack(message, initialBet) {
         payout = -bets[i];
       } else {
         // Only play the dealer's hand if the player hasn't busted
-        if (i === hands.length - 1) {
+        if (calculateHandValue(dealerHand) < 18) {
           playDealer(deck, dealerHand);
         }
         const dealerValue = calculateHandValue(dealerHand);
@@ -1757,7 +1801,7 @@ async function playBlackjack(message, initialBet) {
     }
 
     await addBalance(userId, Math.floor(totalPayout));
-    updateWinStreak(userId, totalPayout > 0);
+    updateWinStreak(userId, totalPayout);
 
     const finalEmbed = await createFinalEmbed(
       results,
@@ -1787,6 +1831,10 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.update({ embeds: [embed], components: [row] });
   }
 
+  if (interaction.customId.startsWith("heist_upgrade_")) {
+    const upgradeType = interaction.customId.split("_")[2];
+    await performHeistUpgrade(interaction, upgradeType);
+  }
   if (interaction.customId === "collect_printers") {
     try {
       const userId = interaction.user.id;
@@ -1827,7 +1875,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (collectedInterest) {
         // Add interest to wallet
-        await addBalance(userId, collectedInterest);
+        await addBalance(userId, Math.floor(collectedInterest));
 
         // Update database
         await Users.update(
@@ -2196,13 +2244,12 @@ const PAYOUTS = {
   "🍒🍒🍒": 5,
   "🍋🍋🍋": 10,
   "🍊🍊🍊": 15,
-  "🍇🍇🍇": 20,
-  "🔔🔔🔔": 25,
-  "💎💎💎": 30,
-  "🍀🍀🍀": 40,
-  "🌟🌟🌟": 50,
-  "💰💰💰": 60,
-  "👑👑👑": 75,
+  "🍇🍇🍇": 25,
+  "🍀🍀🍀": 35,
+  "🌟🌟🌟": 40,
+  "💎💎💎": 50,
+  "💰💰💰": 75,
+  "👑👑👑": 85,
   "7️⃣7️⃣7️⃣": 100,
   ANY2: 1.5, // Any 2 matching symbols
 };
@@ -2325,11 +2372,11 @@ async function playSlotsRound(interaction, betAmount) {
     return;
   }
 
-  await addBalance(userId, -betAmount);
+  await addBalance(userId, Math.floor(-betAmount));
 
   const result = spinSlots();
   const winnings = calculateWinnings(result, betAmount);
-  await addBalance(userId, winnings);
+  await addBalance(userId, Math.floor(winnings));
 
   const newBalance = await getBalance(userId);
 
@@ -2369,7 +2416,7 @@ async function playCoinflip(message, userId, bet) {
   const win = Math.random() * 100 < userStats.winChance;
 
   if (win) {
-    await addBalance(userId, bet);
+    await addBalance(userId, Math.floor(bet));
     userStats.streak++;
     userStats.winChance = Math.min(userStats.winChance + 1, 75); // Cap at 75%
     coinflipStats.set(userId, userStats);
@@ -2412,7 +2459,7 @@ async function playCoinflip(message, userId, bet) {
       components: [row],
     });
   } else {
-    await addBalance(userId, -bet);
+    await addBalance(userId, Math.floor(-bet));
     userStats = { streak: 0, winChance: 50 };
     coinflipStats.set(userId, userStats);
 
@@ -2623,4 +2670,505 @@ async function getUserPrinters(userId) {
     include: ["item"],
   });
   return userItems.filter((item) => allPrinters.includes(item.item.name));
+}
+
+// Main heist command handler
+async function handleHeist(message, targetUser) {
+  const userId = message.author.id;
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const target = await Users.findOne({ where: { user_id: targetUser.id } });
+
+  if (!target) {
+    return message.reply("The target user doesn't have an account.");
+  }
+
+  if (target.bank_balance === 0) {
+    return message.reply("The target's bank is empty. Try someone else!");
+  }
+
+  const lastHeist = user.last_heist ? new Date(user.last_heist).getTime() : 0;
+  const upgrades = await getUserHeistUpgrades(userId);
+  const cooldown = calculateHeistCooldown(
+    HEIST_COOLDOWN,
+    upgrades[HEIST_UPGRADES.COOLDOWN_REDUCTION] || 0
+  );
+
+  if (Date.now() - lastHeist < cooldown) {
+    const timeLeft = Math.max(0, (lastHeist + cooldown - Date.now()) / 1000);
+    const hours = Math.floor(timeLeft / 3600);
+    const minutes = Math.floor((timeLeft % 3600) / 60);
+    const formattedTime = `${hours}h ${minutes}m`;
+    const embed = new EmbedBuilder()
+      .setColor("#ff0000")
+      .setTitle("Heist Cooldown")
+      .setDescription(
+        `You need to wait ${formattedTime} before attempting another heist.`
+      )
+      .setFooter({ text: "Azus Bot" })
+      .setTimestamp();
+    const sentMessage = await message.reply({ embeds: [embed] });
+
+    // Delete the message after 5 seconds
+    setTimeout(() => {
+      sentMessage.delete().catch(console.error);
+    }, 5000);
+
+    return;
+  }
+
+  const wires = calculateWires(
+    BASE_WIRES,
+    upgrades[HEIST_UPGRADES.WIRE_REDUCTION] || 0
+  );
+  const stealPercentage = calculateStealPercentage(
+    BASE_STEAL_PERCENTAGE,
+    upgrades[HEIST_UPGRADES.STEAL_INCREASE] || 0
+  );
+
+  const correctWire = Math.floor(Math.random() * wires) + 1;
+  const buttons = [];
+
+  const wireColors = ["🔴", "🔵", "🟢", "🟡", "⚪"];
+  const buttonStyles = [
+    ButtonStyle.Danger,
+    ButtonStyle.Primary,
+    ButtonStyle.Success,
+    ButtonStyle.Secondary,
+    ButtonStyle.Secondary,
+  ];
+
+  for (let i = 1; i <= wires; i++) {
+    const colorIndex = (i - 1) % wireColors.length;
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`heist_wire_${i}`)
+        .setLabel(`Wire ${i}`)
+        .setEmoji(wireColors[colorIndex])
+        .setStyle(buttonStyles[colorIndex])
+    );
+  }
+
+  const row = new ActionRowBuilder().addComponents(buttons);
+
+  const attemptImageUrls = [
+    "https://i.pinimg.com/originals/05/6c/c5/056cc5d673522dd2949efa4c8e531418.jpg",
+    "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS55zHUzlYX4Rr_6zx1pbkA5wbOqTsw6C74Dw&s",
+    "https://i.pinimg.com/736x/20/fc/e1/20fce17ec45587eb28e5fc675f48d414.jpg",
+  ];
+
+  const failureImageUrls = [
+    "https://media1.tenor.com/m/nw830_b_6LYAAAAd/sad.gif",
+    "https://i.imgur.com/iL1MXLu.gif",
+  ];
+
+  const embed = new EmbedBuilder()
+    .setColor("#ff0000")
+    .setTitle("🚨 High-Stakes Heist 🚨")
+    .setDescription(
+      `You're attempting a daring heist on ${targetUser.username}'s bank vault!`
+    )
+    .addFields(
+      { name: "🎯 Target", value: targetUser.username, inline: true },
+      {
+        name: "💰 Potential Loot",
+        value: `${stealPercentage}% of bank`,
+        inline: true,
+      },
+      { name: "🔧 Security Level", value: `${wires} wires`, inline: true },
+      {
+        name: "\u200B",
+        value: "Choose a wire to cut and break into the vault:",
+      }
+    )
+    .setImage(
+      attemptImageUrls[Math.floor(Math.random() * attemptImageUrls.length)]
+    )
+    .setFooter({
+      text: "⚠️ Choose wisely! One wrong move and the alarm will trigger!",
+    })
+    .setTimestamp();
+
+  const heistMessage = await message.reply({
+    embeds: [embed],
+    components: [row],
+  });
+
+  const filter = (interaction) =>
+    interaction.user.id === userId &&
+    interaction.customId.startsWith("heist_wire_");
+  const collector = heistMessage.createMessageComponentCollector({
+    filter,
+    time: 30000,
+  });
+
+  collector.on("collect", async (interaction) => {
+    const chosenWire = parseInt(interaction.customId.split("_")[2]);
+
+    if (chosenWire === correctWire) {
+      const stolenAmount = Math.floor(
+        target.bank_balance * (stealPercentage / 100)
+      );
+      addBankBalance(target.user_id, -stolenAmount);
+      addBalance(userId, stolenAmount);
+
+      const successEmbed = new EmbedBuilder()
+        .setColor("#00ff00")
+        .setTitle("🎉 Heist Successful! 💰")
+        .setDescription(`You've cracked the vault and escaped with the loot!`)
+        .addFields(
+          {
+            name: "💼 Stolen Loot",
+            value: `🪙 ${stolenAmount.toLocaleString()}`,
+            inline: true,
+          },
+          {
+            name: "🏦 New Balance",
+            value: `🪙 ${(user.balance + stolenAmount).toLocaleString()}`,
+            inline: true,
+          }
+        )
+        .setImage("https://media.tenor.com/4PgHCbk6yAEAAAAM/rich-cash.gif") // Replace with a success-themed image URL
+        .setFooter({ text: "You've pulled off the perfect heist!" })
+        .setTimestamp();
+
+      await interaction.update({ embeds: [successEmbed], components: [] });
+    } else {
+      await Users.update(
+        { last_heist: Date.now() },
+        { where: { user_id: userId } }
+      );
+
+      const failEmbed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("❌ Heist Failed! 🚔")
+        .setDescription(
+          "You cut the wrong wire! Alarms are blaring, and security is closing in!"
+        )
+        .addFields({
+          name: "😰 Outcome",
+          value:
+            "You barely managed to escape, but the heist was a total bust.",
+        })
+        .setImage(
+          failureImageUrls[Math.floor(Math.random() * failureImageUrls.length)]
+        )
+        .setFooter({ text: "Better luck next time, rookie!" })
+        .setTimestamp();
+
+      await interaction.update({ embeds: [failEmbed], components: [] });
+    }
+
+    collector.stop();
+  });
+
+  collector.on("end", (collected, reason) => {
+    if (reason === "time") {
+      const timeoutEmbed = new EmbedBuilder()
+        .setColor("#ff9900")
+        .setTitle("⏰ Heist Aborted!")
+        .setDescription(
+          "You took too long to act. The security system detected your presence!"
+        )
+        .addFields({
+          name: "😓 Outcome",
+          value: "The heist was aborted before it even began.",
+        })
+        .setFooter({ text: "Time is money in this business!" })
+        .setTimestamp();
+
+      heistMessage.edit({ embeds: [timeoutEmbed], components: [] });
+    }
+  });
+}
+
+// Heist cooldown (in milliseconds)
+const HEIST_COOLDOWN = 14 * 60 * 60 * 1000;
+
+// Base number of wires
+const BASE_WIRES = 5;
+
+// Base percentage of bank stolen
+const BASE_STEAL_PERCENTAGE = 5;
+
+// Heist upgrades
+const HEIST_UPGRADES = {
+  WIRE_REDUCTION: "wire_reduction",
+  STEAL_INCREASE: "steal_increase",
+  COOLDOWN_REDUCTION: "cooldown_reduction",
+};
+
+// Function to get user's heist upgrades
+async function getUserHeistUpgrades(userId) {
+  const userItems = await UserItems.findAll({
+    where: { user_id: userId },
+    include: [
+      {
+        model: CurrencyShop,
+        as: "item",
+        where: {
+          name: Object.values(UPGRADE_NAMES),
+        },
+      },
+    ],
+  });
+
+  return Object.values(HEIST_UPGRADES).reduce((upgrades, upgradeType) => {
+    const item = userItems.find(
+      (ui) => ui.item.name === UPGRADE_NAMES[upgradeType]
+    );
+    upgrades[upgradeType] = item ? item.amount : 0;
+    return upgrades;
+  }, {});
+}
+
+// Function to calculate actual number of wires based on upgrades
+function calculateWires(baseWires, wireReductionLevel) {
+  return Math.max(2, baseWires - wireReductionLevel);
+}
+
+// Function to calculate steal percentage based on upgrades
+function calculateStealPercentage(basePercentage, stealIncreaseLevel) {
+  return Math.min(50, basePercentage + stealIncreaseLevel * 5);
+}
+
+// Function to calculate cooldown based on upgrades
+function calculateHeistCooldown(baseCooldown, cooldownReductionLevel) {
+  return Math.max(
+    30 * 60 * 1000,
+    baseCooldown - cooldownReductionLevel * 30 * 60 * 4000
+  );
+}
+
+async function handleHeistUpgrade(message) {
+  const userId = message.author.id;
+  const { embed, upgradeInfo } = await createHeistUpgradeEmbed(userId);
+  const row = createHeistUpgradeButtons(upgradeInfo);
+
+  return message.reply({ embeds: [embed], components: [row] });
+}
+
+function calculateHeistUpgradeCost(baseCost, level) {
+  return baseCost * Math.pow(2, level - 1);
+}
+
+// Add this mapping at the top of your file with other constants
+const UPGRADE_TYPE_MAP = {
+  wire: HEIST_UPGRADES.WIRE_REDUCTION,
+  steal: HEIST_UPGRADES.STEAL_INCREASE,
+  cooldown: HEIST_UPGRADES.COOLDOWN_REDUCTION,
+};
+
+async function performHeistUpgrade(interaction, shortUpgradeType) {
+  try {
+    const userId = interaction.user.id;
+    const user = await Users.findOne({ where: { user_id: userId } });
+    if (!user) {
+      return interaction.reply({
+        content: "User not found. Please try again.",
+        ephemeral: true,
+      });
+    }
+
+    const upgradeType = UPGRADE_TYPE_MAP[shortUpgradeType];
+    if (!upgradeType) {
+      console.error(`Invalid upgradeType: ${shortUpgradeType}`);
+      return interaction.reply({
+        content: "Invalid upgrade type. Please try again.",
+        ephemeral: true,
+      });
+    }
+
+    const upgrades = await getUserHeistUpgrades(userId);
+    const currentLevel = upgrades[upgradeType] || 0;
+
+    const upgradeItem = await CurrencyShop.findOne({
+      where: { name: UPGRADE_NAMES[upgradeType] },
+    });
+
+    if (!upgradeItem) {
+      console.error(
+        `Upgrade item not found for: ${UPGRADE_NAMES[upgradeType]}`
+      );
+      return interaction.reply({
+        content: "Upgrade not found. Please contact an administrator.",
+        ephemeral: true,
+      });
+    }
+
+    if (currentLevel >= upgradeItem.max_level) {
+      return interaction.reply({
+        content: "This upgrade is already at max level.",
+        ephemeral: true,
+      });
+    }
+
+    const upgradeCost = calculateHeistUpgradeCost(
+      upgradeItem.cost,
+      currentLevel + 1
+    );
+
+    if (user.bank_balance < upgradeCost) {
+      return interaction.reply({
+        content: "You don't have enough money for this upgrade.",
+        ephemeral: true,
+      });
+    }
+
+    await addBankBalance(userId, -upgradeCost);
+
+    const [userItem, created] = await UserItems.findOrCreate({
+      where: { user_id: userId, item_id: upgradeItem.id },
+      defaults: { amount: 0, total_upgrade_cost: 0 },
+    });
+
+    userItem.amount = currentLevel + 1;
+    userItem.total_upgrade_cost += upgradeCost;
+    await userItem.save();
+
+    // Regenerate the entire heist upgrade embed
+    const { embed, upgradeInfo } = await createHeistUpgradeEmbed(userId);
+    const updatedRow = createHeistUpgradeButtons(upgradeInfo);
+
+    await interaction.update({
+      embeds: [embed],
+      components: [updatedRow],
+    });
+  } catch (error) {
+    console.error("Error in performHeistUpgrade:", error);
+    await interaction.reply({
+      content:
+        "An error occurred while processing your upgrade. Please try again later.",
+      ephemeral: true,
+    });
+  }
+}
+
+const UPGRADE_NAMES = {
+  [HEIST_UPGRADES.WIRE_REDUCTION]: "Wire Cutter",
+  [HEIST_UPGRADES.STEAL_INCREASE]: "Insider Info",
+  [HEIST_UPGRADES.COOLDOWN_REDUCTION]: "Stealth Tech",
+};
+
+const upgradeEmojis = {
+  [HEIST_UPGRADES.WIRE_REDUCTION]: "✂️",
+  [HEIST_UPGRADES.STEAL_INCREASE]: "🕵️",
+  [HEIST_UPGRADES.COOLDOWN_REDUCTION]: "⏱️",
+};
+
+function formatTimeHours(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${hours}h`;
+}
+
+async function createHeistUpgradeEmbed(userId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  const upgrades = await getUserHeistUpgrades(userId);
+
+  const embed = new EmbedBuilder()
+    .setColor("#0099ff")
+    .setTitle("🔒 Upgrade Heist Equipment")
+    .setDescription("Choose an upgrade to improve your heist capabilities:")
+    .setFooter({ text: "Azus Bot • Click a button to upgrade" })
+    .setTimestamp();
+
+  const upgradeInfo = [];
+
+  for (const [upgradeType, upgradeName] of Object.entries(UPGRADE_NAMES)) {
+    const upgrade = await CurrencyShop.findOne({
+      where: { name: upgradeName },
+    });
+    const currentLevel = upgrades[upgradeType] || 0;
+    const nextLevel = currentLevel + 1;
+    const upgradeCost = calculateHeistUpgradeCost(upgrade.cost, nextLevel);
+
+    let currentEffect, nextEffect;
+
+    if (upgradeType === HEIST_UPGRADES.WIRE_REDUCTION) {
+      currentEffect = calculateWires(5, currentLevel);
+      nextEffect = calculateWires(5, nextLevel);
+    } else if (upgradeType === HEIST_UPGRADES.STEAL_INCREASE) {
+      currentEffect = `${calculateStealPercentage(
+        BASE_STEAL_PERCENTAGE,
+        currentLevel
+      )}%`;
+      nextEffect = `${calculateStealPercentage(
+        BASE_STEAL_PERCENTAGE,
+        nextLevel
+      )}%`;
+    } else if (upgradeType === HEIST_UPGRADES.COOLDOWN_REDUCTION) {
+      currentEffect = formatTimeHours(
+        calculateHeistCooldown(14 * 60 * 60 * 1000, currentLevel) / 1000
+      );
+      nextEffect = formatTimeHours(
+        calculateHeistCooldown(14 * 60 * 60 * 1000, nextLevel) / 1000
+      );
+    }
+
+    const emoji = upgradeEmojis[upgradeType];
+
+    let upgradeStatus;
+    if (currentLevel >= upgrade.max_level) {
+      upgradeStatus = `✨ MAX LEVEL (${currentLevel}/${upgrade.max_level}) ✨`;
+    } else if (user.bank_balance < upgradeCost) {
+      upgradeStatus = `❌ Insufficient Funds (${currentLevel}/${upgrade.max_level})`;
+    } else {
+      upgradeStatus = `✅ Available (${currentLevel}/${upgrade.max_level})`;
+    }
+
+    embed.addFields({
+      name: `${emoji} ${upgradeName} Upgrade`,
+      value: [
+        `\`\`\`${upgradeStatus}\`\`\``,
+        `Effect: ${currentEffect}${
+          currentLevel < upgrade.max_level ? ` ➜ ${nextEffect}` : ""
+        }`,
+        currentLevel < upgrade.max_level
+          ? `Cost: 🪙 ${upgradeCost.toLocaleString()}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      inline: false,
+    });
+
+    upgradeInfo.push({
+      type: upgradeType,
+      name: upgradeName,
+      currentLevel,
+      maxLevel: upgrade.max_level,
+      cost: upgradeCost,
+      canAfford: user.bank_balance >= upgradeCost,
+    });
+  }
+
+  embed.addFields({
+    name: "Your Balance",
+    value: `🪙 ${user.bank_balance.toLocaleString()}`,
+    inline: false,
+  });
+
+  return { embed, upgradeInfo };
+}
+
+function createHeistUpgradeButtons(upgradeInfo) {
+  const row = new ActionRowBuilder();
+
+  for (const upgrade of upgradeInfo) {
+    const button = new ButtonBuilder()
+      .setCustomId(`heist_upgrade_${upgrade.type}`)
+      .setLabel(`Upgrade ${upgrade.name}`)
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji(upgradeEmojis[upgrade.type])
+      .setDisabled(
+        upgrade.currentLevel >= upgrade.maxLevel || !upgrade.canAfford
+      );
+
+    row.addComponents(button);
+  }
+
+  return row;
 }

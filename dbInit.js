@@ -83,6 +83,36 @@ sequelize
         };
         shop.push(CurrencyShop.upsert(upgradeData));
       }
+
+      // Add these upgrade items to your shop
+      const heistUpgrades = [
+        {
+          name: "Wire Cutter",
+          cost: 10000,
+          type: "upgrade",
+          upgrade_type: HEIST_UPGRADES.WIRE_REDUCTION,
+          max_level: 3,
+        },
+        {
+          name: "Insider Info",
+          cost: 25000,
+          type: "upgrade",
+          upgrade_type: HEIST_UPGRADES.STEAL_INCREASE,
+          max_level: 4,
+        },
+        {
+          name: "Stealth Tech",
+          cost: 50000,
+          type: "upgrade",
+          upgrade_type: HEIST_UPGRADES.COOLDOWN_REDUCTION,
+          max_level: 3,
+        },
+      ];
+
+      // Add this to your dbInit.js to create the new upgrade items
+      for (const upgrade of heistUpgrades) {
+        shop.push(CurrencyShop.upsert(upgrade));
+      }
     }
 
     await Promise.all(shop);
@@ -91,3 +121,9 @@ sequelize
     sequelize.close();
   })
   .catch(console.error);
+
+const HEIST_UPGRADES = {
+  WIRE_REDUCTION: "wire_reduction",
+  STEAL_INCREASE: "steal_increase",
+  COOLDOWN_REDUCTION: "cooldown_reduction",
+};
