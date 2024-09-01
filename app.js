@@ -186,13 +186,6 @@ async function rob(robberId, targetId) {
   const robberTotal = robber.wallet + robber.bank;
   const targetTotal = target.wallet + target.bank;
 
-  if (target.wallet < 50) {
-    return {
-      success: false,
-      message: "The target doesn't have enough money to rob.",
-    };
-  }
-
   // Adjust success chance based on wealth difference
   const wealthRatio = robberTotal / targetTotal;
   const baseSuccessChance = 0.7;
@@ -435,6 +428,19 @@ async function addBankBalance(id, amount) {
   return newUser;
 }
 
+async function createUserIfNotExists(id) {
+  let user = bankAccounts.get(id);
+  if (!user) {
+    user = await Users.create({
+      user_id: id,
+      balance: 0,
+      bank_balance: 0,
+    });
+    bankAccounts.set(id, user);
+  }
+  return user;
+}
+
 async function getFullBalance(userId) {
   const [user] = await Users.findOrCreate({
     where: { user_id: userId },
@@ -474,9 +480,20 @@ async function getBankBalance(userId) {
 
 initializeBankAccounts();
 
-client.login(
-  "MTI3MzkzMTM0MjQ2MzIzODIxOA.GPcdim.KWlQvIrTJLtob2hm6Zl6yE8_PMFJuDpkO_7LLs"
-);
+function login() {
+  client
+    .login(
+      "MTI3MzkzMTM0MjQ2MzIzODIxOA.GPcdim.KWlQvIrTJLtob2hm6Zl6yE8_PMFJuDpkO_7LLs"
+    )
+    .then(() => console.log("Bot logged in successfully"))
+    .catch((error) => {
+      console.error("Failed to log in:", error);
+      console.log("Attempting to reconnect in 30 seconds...");
+      setTimeout(login, 30000);
+    });
+}
+
+login();
 
 let timeStarted;
 
@@ -512,6 +529,8 @@ client.on("messageCreate", async (message) => {
 
   const args = message.content.slice(1).trim().split(/ +/);
   const commandName = args.shift().toLowerCase();
+
+  await createUserIfNotExists(message.author.id);
 
   if (commandName === "inventory") {
     const target = message.mentions.users.first() || message.author;
@@ -725,10 +744,26 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "deposit" || commandName === "dep") {
     const walletBalance = await getBalance(message.author.id);
-    const amount =
-      args[0]?.toLowerCase() === "all" ? walletBalance : parseInt(args[0]);
+    let amount;
 
-    if (args[0]?.toLowerCase() !== "all" && (isNaN(amount) || amount <= 0)) {
+    if (args[0]?.toLowerCase() === "all") {
+      amount = walletBalance;
+    } else {
+      amount = parseInt(args[0]);
+    }
+
+    // Explicit check for negative amounts
+    if (amount < 0) {
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("Invalid Deposit Amount")
+        .setDescription("You cannot deposit a negative amount.")
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
+    if (isNaN(amount) || amount === 0) {
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("Invalid Deposit Amount")
@@ -892,9 +927,16 @@ client.on("messageCreate", async (message) => {
         }
 
         if (printers.length > 0) {
-          const printerInfo = printerMoney.printerDetails
+          const orderedPrinterDetails = allPrinters
+            .map((printerName) =>
+              printerMoney.printerDetails.find((p) => p.name === printerName)
+            )
+            .filter(Boolean);
+
+          const printerInfo = orderedPrinterDetails
             .map((p) => {
-              const name = `${p.name}`;
+              const icon = getPrinterIcon(p.name);
+              const name = `${icon} ${p.name}`;
               const generated = `🪙 ${p.generated.toLocaleString()} / ${p.capacity.toLocaleString()}`;
               const rate = `💰 ${p.outputPerCycle.toLocaleString()}/cycle`;
               const interval = `⏱️ ${formatTime(p.interval)}`;
@@ -967,12 +1009,26 @@ client.on("messageCreate", async (message) => {
 
     const cooldownLeft = await updateRobCooldown(message.author.id);
 
+    const targetBalance = await getFullBalance(target.id);
+
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("Rob Cooldown")
         .setDescription(
           `You need to wait ${cooldownLeft} hours before attempting another robbery.`
+        )
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
+    if (targetBalance.wallet <= 50) {
+      const embed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("No Money to Rob")
+        .setDescription(
+          `You robbed an individual with no money, you absolute prick! Go sit in the corner and think about what you've done.`
         )
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
@@ -1359,7 +1415,10 @@ const values = [
 ];
 
 function createDeck() {
-  return suits.flatMap((suit) => values.map((value) => ({ suit, value })));
+  const singleDeck = suits.flatMap((suit) =>
+    values.map((value) => ({ suit, value }))
+  );
+  return [...singleDeck, ...singleDeck, ...singleDeck]; // Creates 3 decks
 }
 
 function shuffleDeck(deck) {
@@ -2212,8 +2271,8 @@ const PAYOUTS = {
   "🌟🌟🌟": 40,
   "💎💎💎": 50,
   "💰💰💰": 75,
-  "👑👑👑": 85,
-  "7️⃣7️⃣7️⃣": 100,
+  "👑👑👑": 100,
+  "7️⃣7️⃣7️⃣": 125,
   ANY2: 1.5, // Any 2 matching symbols
 };
 
@@ -2635,6 +2694,20 @@ async function getUserPrinters(userId) {
   return userItems.filter((item) => allPrinters.includes(item.item.name));
 }
 
+function getPrinterIcon(printerName) {
+  const icons = {
+    "Bronze Printer": "🟤",
+    "Silver Printer": "⚪",
+    "Gold Printer": "🟡",
+    "Platinum Printer": "🔷", // Using white circle as platinum doesn't have a specific emoji
+    "Titanium Printer": "🔶",
+    "Diamond Printer": "💎",
+    "Quantum Printer": "⚛️",
+    "Neutronium Printer": "🌠",
+  };
+  return icons[printerName] || "🖨️"; // Default to a generic printer icon
+}
+
 // Main heist command handler
 async function handleHeist(message, targetUser) {
   const userId = message.author.id;
@@ -2645,6 +2718,33 @@ async function handleHeist(message, targetUser) {
     return message.reply("The target user doesn't have an account.");
   }
 
+  const protectionPeriod = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+  if (
+    target.last_heisted &&
+    Date.now() - target.last_heisted.getTime() < protectionPeriod
+  ) {
+    const timeLeft =
+      (target.last_heisted.getTime() + protectionPeriod - Date.now()) / 1000;
+    const hours = Math.floor(timeLeft / 3600);
+    const minutes = Math.floor((timeLeft % 3600) / 60);
+    const embed = new EmbedBuilder()
+      .setColor("#FFD700")
+      .setTitle("🛡️ Heist Blocked")
+      .setDescription(
+        `Looks like their vault is still on high alert from the last heist attempt.`
+      )
+      .addFields({
+        name: "Security Cooldown",
+        value: `${hours}h ${minutes}m remaining`,
+        inline: true,
+      })
+      .setFooter({
+        text: "Tip: Scout for other potential targets in the meantime",
+      })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
   if (target.bank_balance === 0) {
     return message.reply("The target's bank is empty. Try someone else!");
   }
@@ -2767,12 +2867,22 @@ async function handleHeist(message, targetUser) {
   collector.on("collect", async (interaction) => {
     const chosenWire = parseInt(interaction.customId.split("_")[2]);
 
+    await Users.update(
+      { last_heist: Date.now() },
+      { where: { user_id: userId } }
+    );
+
     if (chosenWire === correctWire) {
       const stolenAmount = Math.floor(
         target.bank_balance * (stealPercentage / 100)
       );
       addBankBalance(target.user_id, -stolenAmount);
       addBalance(userId, stolenAmount);
+
+      await Users.update(
+        { last_heisted: Date.now() },
+        { where: { user_id: target.user_id } }
+      );
 
       const successEmbed = new EmbedBuilder()
         .setColor("#00ff00")
@@ -2796,11 +2906,6 @@ async function handleHeist(message, targetUser) {
 
       await interaction.update({ embeds: [successEmbed], components: [] });
     } else {
-      await Users.update(
-        { last_heist: Date.now() },
-        { where: { user_id: userId } }
-      );
-
       const failEmbed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("❌ Heist Failed! 🚔")
@@ -3140,12 +3245,6 @@ async function handleCooldowns(message) {
   const userId = message.author.id;
   const user = await Users.findOne({ where: { user_id: userId } });
 
-  if (!user) {
-    return message.reply(
-      "You don't have an account yet. Start playing to see your cooldowns!"
-    );
-  }
-
   const upgrades = await getUserHeistUpgrades(userId);
   const heistCooldown = calculateHeistCooldown(
     HEIST_COOLDOWN,
@@ -3171,6 +3270,12 @@ async function handleCooldowns(message) {
       : 0,
   };
 
+  // Calculate heist protection
+  const protectionPeriod = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+  const protectionTimeLeft = user.last_heisted
+    ? Math.max(0, protectionPeriod - (now - user.last_heisted.getTime()))
+    : 0;
+
   const formatTime = (ms) => {
     if (ms === 0) return "Ready!";
     const seconds = Math.floor(ms / 1000);
@@ -3188,7 +3293,13 @@ async function handleCooldowns(message) {
       { name: "🦹 Crime", value: formatTime(cooldowns.crime), inline: true },
       { name: "📅 Daily", value: formatTime(cooldowns.daily), inline: true },
       { name: "💰 Rob", value: formatTime(cooldowns.rob), inline: true },
-      { name: "🏦 Heist", value: formatTime(cooldowns.heist), inline: true }
+      { name: "🏦 Heist", value: formatTime(cooldowns.heist), inline: true },
+      {
+        name: "🛡️ Heist Protection",
+        value:
+          protectionTimeLeft > 0 ? formatTime(protectionTimeLeft) : "Inactive",
+        inline: true,
+      }
     )
     .setFooter({ text: "Azus Bot • Cooldowns update in real-time" })
     .setTimestamp();

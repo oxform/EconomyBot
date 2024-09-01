@@ -41,6 +41,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      last_heisted: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       timestamps: false,

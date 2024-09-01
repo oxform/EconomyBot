@@ -42,7 +42,7 @@ async function migrate() {
     //   type: Sequelize.DATE,
     //   allowNull: true,
     // });
-    await addColumn("users", "last_heist", {
+    await addColumn("users", "last_heisted", {
       type: Sequelize.DATE,
       allowNull: true,
     });
