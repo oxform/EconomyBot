@@ -55,8 +55,8 @@ const allPrinters = [
 ];
 
 async function handleDaily(message) {
-  const userId = message.author.id;
-  const user = await Users.findOne({ where: { user_id: userId } });
+  const combinedId = createCombinedId(message.author.id, message.guild.id);
+  const user = await Users.findOne({ where: { user_id: combinedId } });
   const now = new Date();
   const cooldownAmount = 16 * 60 * 60 * 1000; // 16 hours in milliseconds
   const dailyAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
@@ -87,10 +87,10 @@ async function handleDaily(message) {
     return;
   }
 
-  await addBalance(userId, dailyAmount);
-  await Users.update({ last_daily: now }, { where: { user_id: userId } });
+  await addBalance(combinedId, dailyAmount);
+  await Users.update({ last_daily: now }, { where: { user_id: combinedId } });
 
-  const newBalance = await getBalance(userId);
+  const newBalance = await getBalance(combinedId);
 
   const embed = new EmbedBuilder()
     .setColor("#00ff00")
@@ -112,7 +112,7 @@ async function handleDaily(message) {
 
 async function handleCoinflip(message, args) {
   try {
-    const userId = message.author.id;
+    const userId = createCombinedId(message.author.id, message.guild.id);
     let bet;
 
     const balance = await getBalance(userId);
@@ -148,7 +148,6 @@ async function updateCrimeCooldown(userId) {
   const cooldownAmount = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
 
   if (user.last_crime) {
-    console.log("user", user);
     const expirationTime = user.last_crime.getTime() + cooldownAmount;
 
     if (now.getTime() < expirationTime) {
@@ -395,14 +394,7 @@ async function addBalance(id, amount) {
 
     return user;
   }
-
-  const newUser = await Users.create({
-    user_id: id,
-    balance: amount,
-    bank_balance: 0,
-  });
-  bankAccounts.set(id, newUser);
-  return newUser;
+  return null;
 }
 
 async function addBankBalance(id, amount) {
@@ -419,25 +411,27 @@ async function addBankBalance(id, amount) {
     return user;
   }
 
-  const newUser = await Users.create({
-    user_id: id,
-    balance: 0,
-    bank_balance: amount,
-  });
-  bankAccounts.set(id, newUser);
-  return newUser;
+  return null;
 }
 
 async function createUserIfNotExists(id) {
   let user = bankAccounts.get(id);
+  console.log("bankAccounts", bankAccounts);
   if (!user) {
     user = await Users.create({
       user_id: id,
       balance: 0,
       bank_balance: 0,
     });
-    bankAccounts.set(id, user);
+
+    bankAccounts.set(id, {
+      balance: user.balance || 0,
+      bank_balance: user.bank_balance || 0,
+      lastInterest: Date.now(),
+      accumulatedInterest: user.accumulated_interest,
+    });
   }
+
   return user;
 }
 
@@ -450,16 +444,6 @@ async function getFullBalance(userId) {
       accumulated_interest: 0,
     },
   });
-
-  // Initialize bank account if it doesn't exist
-  if (!bankAccounts.has(userId)) {
-    bankAccounts.set(userId, {
-      balance: user.balance || 0,
-      bank_balance: user.bank_balance || 0,
-      lastInterest: Date.now(),
-      accumulatedInterest: user.accumulated_interest,
-    });
-  }
 
   return {
     wallet: user.balance || 0,
@@ -505,7 +489,9 @@ client.once(Events.ClientReady, async () => {
 
   for (const b of storedBalances) {
     try {
-      const user = await client.users.fetch(b.user_id);
+      // Extract the original Discord user ID from the combined ID
+      const originalUserId = b.user_id.split("-")[0];
+      const user = await client.users.fetch(originalUserId);
       bankAccounts.set(b.user_id, {
         balance: b.balance,
         bank_balance: b.bank_balance || 0,
@@ -520,6 +506,7 @@ client.once(Events.ClientReady, async () => {
       });
     }
   }
+
   console.log("bankAccounts", bankAccounts);
   console.log(`Logged in as ${client.user.tag}!`);
 });
@@ -529,12 +516,13 @@ client.on("messageCreate", async (message) => {
 
   const args = message.content.slice(1).trim().split(/ +/);
   const commandName = args.shift().toLowerCase();
+  const combinedId = createCombinedId(message.author.id, message.guild.id);
 
-  await createUserIfNotExists(message.author.id);
+  await createUserIfNotExists(combinedId);
 
   if (commandName === "inventory") {
     const target = message.mentions.users.first() || message.author;
-    const user = await Users.findOne({ where: { user_id: target.id } });
+    const user = await Users.findOne({ where: { user_id: combinedId } });
     const items = await user.getItems();
 
     if (!items.length) return message.reply(`${target.username} has nothing!`);
@@ -557,7 +545,7 @@ client.on("messageCreate", async (message) => {
       },
     });
     const userItems = await UserItems.findAll({
-      where: { user_id: message.author.id },
+      where: { user_id: combinedId },
       include: ["item"],
     });
 
@@ -579,7 +567,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   } else if (commandName === "buy") {
     const itemName = args.join(" ");
-    const user = await getFullBalance(message.author.id);
+    const user = await getFullBalance(combinedId);
     if (!itemName) {
       return message.reply("Please specify an item to buy.");
     }
@@ -603,7 +591,7 @@ client.on("messageCreate", async (message) => {
     if (isPrinter) {
       // Check if the user already owns this type of printer
       const existingPrinter = await UserItems.findOne({
-        where: { user_id: message.author.id, item_id: item.id },
+        where: { user_id: combinedId, item_id: item.id },
       });
 
       if (existingPrinter) {
@@ -613,17 +601,17 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    await addBankBalance(message.author.id, -item.cost);
+    await addBankBalance(combinedId, -item.cost);
 
     const userItem = await UserItems.findOne({
-      where: { user_id: message.author.id, item_id: item.id },
+      where: { user_id: combinedId, item_id: item.id },
     });
 
     if (userItem) {
       await userItem.increment("amount");
     } else {
       await UserItems.create({
-        user_id: message.author.id,
+        user_id: combinedId,
         item_id: item.id,
         amount: 1,
       });
@@ -647,14 +635,15 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   }
   if (commandName === "leaderboard" || commandName === "lb") {
-    const topUsers = await getTopUsers(true); // Default to net worth
-    const embed = createLeaderboardEmbed(topUsers, true);
+    const guildId = message.guild.id;
+    const topUsers = await getTopUsers(guildId, true); // Default to net worth
+    const embed = createLeaderboardEmbed(topUsers, true, message.guild.name);
     const row = createLeaderboardButtons(true);
 
     return message.reply({ embeds: [embed], components: [row] });
   } // Updated work command
   else if (commandName === "work") {
-    const cooldownLeft = await updateWorkCooldown(message.author.id);
+    const cooldownLeft = await updateWorkCooldown(combinedId);
 
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
@@ -672,8 +661,8 @@ client.on("messageCreate", async (message) => {
       return;
     }
     const addAmount = Math.floor(Math.random() * (300 - 100 + 1)) + 250;
-    await addBalance(message.author.id, addAmount);
-    const newBalance = await getBalance(message.author.id);
+    await addBalance(combinedId, addAmount);
+    const newBalance = await getBalance(combinedId);
     const embed = new EmbedBuilder()
       .setColor("#00ffff")
       .setTitle("Work Complete!")
@@ -687,8 +676,7 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   } else if (commandName === "crime") {
-    const cooldownLeft = await updateCrimeCooldown(message.author.id);
-    console.log("cooldownLeft", cooldownLeft);
+    const cooldownLeft = await updateCrimeCooldown(combinedId);
 
     if (cooldownLeft > 0) {
       const hours = Math.floor(cooldownLeft / 60);
@@ -711,8 +699,8 @@ client.on("messageCreate", async (message) => {
     if (successRate < 0.8) {
       // 80% chance of success
       const addAmount = Math.floor(Math.random() * 600) + 450; // Higher risk, higher reward
-      await addBalance(message.author.id, addAmount);
-      const newBalance = await getBalance(message.author.id);
+      await addBalance(combinedId, addAmount);
+      const newBalance = await getBalance(combinedId);
       const embed = new EmbedBuilder()
         .setColor("#00ff00")
         .setTitle("Crime Successful!")
@@ -727,8 +715,8 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [embed] });
     } else {
       const loseAmount = Math.floor(Math.random() * 200) + 100;
-      await addBalance(message.author.id, -loseAmount);
-      const newBalance = await getBalance(message.author.id);
+      await addBalance(combinedId, -loseAmount);
+      const newBalance = await getBalance(combinedId);
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("Crime Failed!")
@@ -743,7 +731,7 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [embed] });
     }
   } else if (commandName === "deposit" || commandName === "dep") {
-    const walletBalance = await getBalance(message.author.id);
+    const walletBalance = await getBalance(combinedId);
     let amount;
 
     if (args[0]?.toLowerCase() === "all") {
@@ -788,7 +776,7 @@ client.on("messageCreate", async (message) => {
     }
 
     try {
-      const response = await deposit(message.author.id, amount);
+      const response = await deposit(combinedId, amount);
 
       const embed = new EmbedBuilder()
         .setColor("#1abc9c")
@@ -823,7 +811,7 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "withdraw" || commandName === "with") {
     let amount;
-    const account = await getFullBalance(message.author.id);
+    const account = await getFullBalance(combinedId);
 
     if (!args.length) {
       return message.reply(
@@ -850,7 +838,7 @@ client.on("messageCreate", async (message) => {
     }
 
     try {
-      const response = await withdraw(message.author.id, amount);
+      const response = await withdraw(combinedId, amount);
       const embed = new EmbedBuilder()
         .setColor("#1abc9c")
         .setTitle("Bank Withdrawal")
@@ -881,9 +869,13 @@ client.on("messageCreate", async (message) => {
   ) {
     try {
       const targetUser = message.mentions.users.first() || message.author;
-      const account = await getFullBalance(targetUser.id);
-      const interestInfo = await calculateInterest(targetUser.id);
-      const printers = await getUserPrinters(targetUser.id);
+      const targetCombinedId = createCombinedId(
+        targetUser.id,
+        message.guild.id
+      );
+      const account = await getFullBalance(targetCombinedId);
+      const interestInfo = await calculateInterest(targetCombinedId);
+      const printers = await getUserPrinters(targetCombinedId);
       const printerMoney = await calculatePrinterMoney(printers);
 
       if (account && interestInfo) {
@@ -964,7 +956,7 @@ client.on("messageCreate", async (message) => {
           });
         }
 
-        const isOwnAccount = targetUser.id === message.author.id;
+        const isOwnAccount = targetCombinedId === combinedId;
 
         if (isOwnAccount) {
           const collectButton = new ButtonBuilder()
@@ -999,17 +991,19 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "rob") {
     const target = message.mentions.users.first();
+    const targetCombinedId = createCombinedId(target.id, message.guild.id);
+
     if (!target) {
       return message.reply("You need to mention a user to rob!");
     }
 
-    if (target.id === message.author.id) {
+    if (targetCombinedId === combinedId) {
       return message.reply("You can't rob yourself!");
     }
 
-    const cooldownLeft = await updateRobCooldown(message.author.id);
+    const cooldownLeft = await updateRobCooldown(combinedId);
 
-    const targetBalance = await getFullBalance(target.id);
+    const targetBalance = await getFullBalance(targetCombinedId);
 
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
@@ -1036,7 +1030,7 @@ client.on("messageCreate", async (message) => {
     }
 
     try {
-      const result = await rob(message.author.id, target.id);
+      const result = await rob(combinedId, targetCombinedId);
       const color = result.success ? "#00ff00" : "#ff0000";
       const title = result.success ? "Successful Robbery!" : "Failed Robbery!";
 
@@ -1063,7 +1057,7 @@ client.on("messageCreate", async (message) => {
       );
     }
   } else if (commandName === "blackjack" || commandName === "bj") {
-    const balance = await getBalance(message.author.id);
+    const balance = await getBalance(combinedId);
     let bet;
 
     const MINIMUM_BET = 100;
@@ -1123,7 +1117,7 @@ client.on("messageCreate", async (message) => {
   } else if (commandName === "daily") {
     await handleDaily(message);
   } else if (commandName === "hobo") {
-    const balance = await getFullBalance(message.author.id);
+    const balance = await getFullBalance(combinedId);
 
     if (balance.wallet + balance.bank > 100) {
       const embed = new EmbedBuilder()
@@ -1139,7 +1133,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const cooldownLeft = updateHoboCooldown(message.author.id);
+    const cooldownLeft = updateHoboCooldown(combinedId);
 
     if (cooldownLeft > 0) {
       const embed = new EmbedBuilder()
@@ -1158,10 +1152,10 @@ client.on("messageCreate", async (message) => {
     }
 
     const earnedAmount = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
-    await addBalance(message.author.id, earnedAmount);
+    await addBalance(combinedId, earnedAmount);
 
     // Update cooldown only after successful execution
-    updateHoboCooldown(message.author.id);
+    updateHoboCooldown(combinedId);
 
     const embed = new EmbedBuilder()
       .setColor("#00ff00")
@@ -1177,10 +1171,15 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   } else if (commandName === "transfer") {
     // if user is "myola" then return
-    if (message.author.id === "174087056211968000") {
+    if (combinedId === "174087056211968000") {
       return;
     }
     const recipient = message.mentions.users.first();
+
+    const recipientCombinedId = createCombinedId(
+      recipient.id,
+      message.guild.id
+    );
 
     if (!recipient) {
       const embed = new EmbedBuilder()
@@ -1214,7 +1213,7 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    if (recipient.id === message.author.id) {
+    if (recipientCombinedId === combinedId) {
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("Invalid Transfer")
@@ -1227,7 +1226,7 @@ client.on("messageCreate", async (message) => {
     try {
       let amount;
       if (amountArg === "all") {
-        amount = await getBalance(message.author.id);
+        amount = await getBalance(combinedId);
       } else {
         amount = parseInt(amountArg);
         if (isNaN(amount) || amount <= 0) {
@@ -1238,8 +1237,8 @@ client.on("messageCreate", async (message) => {
       }
 
       const result = await transferMoney(
-        message.author.id,
-        recipient.id,
+        combinedId,
+        recipientCombinedId,
         amount
       );
 
@@ -1362,9 +1361,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("Usage: !upgrade [printer name]");
     }
 
-    const user = await Users.findOne({ where: { user_id: message.author.id } });
+    const user = await Users.findOne({ where: { user_id: combinedId } });
     const printer = await UserItems.findOne({
-      where: { user_id: message.author.id },
+      where: { user_id: combinedId },
       include: [
         {
           model: CurrencyShop,
@@ -1383,10 +1382,14 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   } else if (commandName === "heist") {
     const targetUser = message.mentions.users.first();
+    const targetUserCombinedId = createCombinedId(
+      targetUser.id,
+      message.guild.id
+    );
     if (!targetUser) {
       return message.reply("Please mention a user to heist.");
     }
-    if (targetUser.id === message.author.id) {
+    if (targetUserCombinedId === combinedId) {
       return message.reply("You can't heist yourself!");
     }
     await handleHeist(message, targetUser);
@@ -1418,7 +1421,14 @@ function createDeck() {
   const singleDeck = suits.flatMap((suit) =>
     values.map((value) => ({ suit, value }))
   );
-  return [...singleDeck, ...singleDeck, ...singleDeck]; // Creates 3 decks
+  return [
+    ...singleDeck,
+    ...singleDeck,
+    ...singleDeck,
+    ...singleDeck,
+    ...singleDeck,
+    ...singleDeck,
+  ]; // Creates 3 decks
 }
 
 function shuffleDeck(deck) {
@@ -1448,7 +1458,7 @@ function dealCard(deck) {
 }
 
 function playDealer(deck, dealerHand) {
-  while (calculateHandValue(dealerHand) < 18) {
+  while (calculateHandValue(dealerHand) < 17) {
     dealerHand.push(dealCard(deck));
   }
 }
@@ -1656,7 +1666,7 @@ function canSplit(card1, card2) {
 }
 
 async function playBlackjack(message, initialBet) {
-  const userId = message.author.id;
+  const userId = createCombinedId(message.author.id, message.guild.id);
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
     multiplier: 1,
@@ -1708,8 +1718,12 @@ async function playBlackjack(message, initialBet) {
     components: [row],
   });
 
-  const filter = (i) =>
-    i.user.id === userId && i.customId.startsWith("blackjack_");
+  const guildId = message.guild.id;
+
+  const filter = (i) => {
+    const interactionUserId = `${i.user.id}-${guildId}`; // Create combined ID for the interaction
+    return interactionUserId === userId && i.customId.startsWith("blackjack_");
+  };
   const collector = gameMessage.createMessageComponentCollector({
     filter,
     time: 60000,
@@ -1841,13 +1855,22 @@ async function playBlackjack(message, initialBet) {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
+  const guildId = interaction.guild.id;
+  const userId = interaction.user.id;
+  const combinedId = createCombinedId(userId, guildId);
+
   if (
     interaction.customId === "leaderboard_net_worth" ||
     interaction.customId === "leaderboard_total_cash"
   ) {
     const showNetWorth = interaction.customId === "leaderboard_net_worth";
-    const topUsers = await getTopUsers(showNetWorth);
-    const embed = createLeaderboardEmbed(topUsers, showNetWorth);
+    const guildId = interaction.guild.id;
+    const topUsers = await getTopUsers(guildId, showNetWorth);
+    const embed = createLeaderboardEmbed(
+      topUsers,
+      showNetWorth,
+      interaction.guild.name
+    );
     const row = createLeaderboardButtons(showNetWorth);
 
     await interaction.update({ embeds: [embed], components: [row] });
@@ -1859,7 +1882,7 @@ client.on("interactionCreate", async (interaction) => {
   }
   if (interaction.customId === "collect_printers") {
     try {
-      const userId = interaction.user.id;
+      const userId = combinedId;
       const collectedAmount = await collectPrinterMoney(userId);
       const newBalance = await getBalance(userId);
 
@@ -1890,7 +1913,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.customId === "collect_interest") {
     try {
-      const userId = interaction.user.id;
+      const userId = combinedId;
       const account = bankAccounts.get(userId);
       const getBalance = await getFullBalance(userId);
       const collectedInterest = getBalance.accumulatedInterest;
@@ -1954,7 +1977,7 @@ client.on("interactionCreate", async (interaction) => {
   }
   if (interaction.customId.startsWith("coinflip_again_")) {
     const bet = parseInt(interaction.customId.split("_")[2]);
-    const userId = interaction.user.id;
+    const userId = combinedId;
     const balance = await getBalance(userId);
 
     if (balance < bet) {
@@ -1980,10 +2003,10 @@ client.on("interactionCreate", async (interaction) => {
     const [, printerId, upgradeType] = interaction.customId.split("_");
 
     const user = await Users.findOne({
-      where: { user_id: interaction.user.id },
+      where: { user_id: combinedId },
     });
     const printer = await UserItems.findOne({
-      where: { user_id: interaction.user.id, item_id: printerId },
+      where: { user_id: combinedId, item_id: printerId },
       include: ["item"],
     });
 
@@ -2042,17 +2065,17 @@ client.on("interactionCreate", async (interaction) => {
         [upgradeField]: nextLevel,
         total_upgrade_cost: printer.total_upgrade_cost + upgradeCost,
       },
-      { where: { user_id: interaction.user.id, item_id: printerId } }
+      { where: { user_id: combinedId, item_id: printerId } }
     );
-    await addBankBalance(interaction.user.id, -upgradeCost);
+    await addBankBalance(combinedId, -upgradeCost);
 
     // Fetch the updated printer and user data
     const updatedPrinter = await UserItems.findOne({
-      where: { user_id: interaction.user.id, item_id: printerId },
+      where: { user_id: combinedId, item_id: printerId },
       include: ["item"],
     });
     const updatedUser = await Users.findOne({
-      where: { user_id: interaction.user.id },
+      where: { user_id: combinedId },
     });
 
     // Create an updated embed and buttons
@@ -2195,13 +2218,21 @@ async function calculateNetWorth(userId) {
   return user.balance + user.bank_balance + itemValue;
 }
 
-async function getTopUsers(sortByNetWorth = true) {
-  const users = await Users.findAll();
+async function getTopUsers(guildId, sortByNetWorth = true) {
+  const users = await Users.findAll({
+    where: {
+      user_id: {
+        [Op.like]: `%-${guildId}`, // Filter users by the current guild
+      },
+    },
+  });
+
   const userNetWorths = await Promise.all(
     users.map(async (user) => {
+      const [userId, _] = user.user_id.split("-");
       const netWorth = await calculateNetWorth(user.user_id);
       return {
-        userId: user.user_id,
+        userId,
         netWorth,
         totalCash: user.balance + user.bank_balance,
       };
@@ -2215,10 +2246,12 @@ async function getTopUsers(sortByNetWorth = true) {
     .slice(0, 10);
 }
 
-function createLeaderboardEmbed(topUsers, showNetWorth) {
+function createLeaderboardEmbed(topUsers, showNetWorth, guildName) {
   return new EmbedBuilder()
     .setColor("#ff00ff")
-    .setTitle(showNetWorth ? "Net Worth Leaderboard" : "Balance Leaderboard")
+    .setTitle(
+      `${guildName} - ${showNetWorth ? "Net Worth" : "Balance"} Leaderboard`
+    )
     .setDescription(
       topUsers
         .map(({ userId, netWorth, totalCash }, index) => {
@@ -2228,7 +2261,9 @@ function createLeaderboardEmbed(topUsers, showNetWorth) {
         .join("\n")
     )
     .setFooter({
-      text: `Top 10 ${showNetWorth ? "Wealthiest" : "Richest"} Users`,
+      text: `Top 10 ${
+        showNetWorth ? "Wealthiest" : "Richest"
+      } Users in ${guildName}`,
     })
     .setTimestamp();
 }
@@ -2335,7 +2370,7 @@ function calculateWinnings(result, betAmount) {
 }
 
 async function handleSlots(message, args) {
-  const userId = message.author.id;
+  const userId = createCombinedId(message.author.id, message.guild.id);
   const userBalance = await getBalance(userId);
 
   if (!args.length) {
@@ -2383,7 +2418,7 @@ async function handleSlots(message, args) {
 }
 
 async function playSlotsRound(interaction, betAmount) {
-  const userId = interaction.user.id;
+  const userId = createCombinedId(interaction.user.id, interaction.guild.id);
   const userBalance = await getBalance(userId);
 
   if (userBalance < betAmount) {
@@ -2710,9 +2745,10 @@ function getPrinterIcon(printerName) {
 
 // Main heist command handler
 async function handleHeist(message, targetUser) {
-  const userId = message.author.id;
+  const userId = createCombinedId(message.author.id, message.guild.id);
   const user = await Users.findOne({ where: { user_id: userId } });
-  const target = await Users.findOne({ where: { user_id: targetUser.id } });
+  const targetUserId = createCombinedId(targetUser.id, message.guild.id);
+  const target = await Users.findOne({ where: { user_id: targetUserId } });
 
   if (!target) {
     return message.reply("The target user doesn't have an account.");
@@ -2856,9 +2892,19 @@ async function handleHeist(message, targetUser) {
     components: [row],
   });
 
-  const filter = (interaction) =>
-    interaction.user.id === userId &&
-    interaction.customId.startsWith("heist_wire_");
+  const guildId = message.guild.id;
+
+  const filter = (interaction) => {
+    const interactionCombinedId = createCombinedId(
+      interaction.user.id,
+      guildId
+    );
+
+    return (
+      interactionCombinedId === userId &&
+      interaction.customId.startsWith("heist_wire_")
+    );
+  };
   const collector = heistMessage.createMessageComponentCollector({
     filter,
     time: 30000,
@@ -2876,12 +2922,12 @@ async function handleHeist(message, targetUser) {
       const stolenAmount = Math.floor(
         target.bank_balance * (stealPercentage / 100)
       );
-      addBankBalance(target.user_id, -stolenAmount);
+      addBankBalance(targetUserId, -stolenAmount);
       addBalance(userId, stolenAmount);
 
       await Users.update(
         { last_heisted: Date.now() },
-        { where: { user_id: target.user_id } }
+        { where: { user_id: targetUserId } }
       );
 
       const successEmbed = new EmbedBuilder()
@@ -3008,8 +3054,8 @@ function calculateHeistCooldown(baseCooldown, cooldownReductionLevel) {
 }
 
 async function handleHeistUpgrade(message) {
-  const userId = message.author.id;
-  const { embed, upgradeInfo } = await createHeistUpgradeEmbed(userId);
+  const combinedId = createCombinedId(message.author.id, message.guild.id);
+  const { embed, upgradeInfo } = await createHeistUpgradeEmbed(combinedId);
   const row = createHeistUpgradeButtons(upgradeInfo);
 
   return message.reply({ embeds: [embed], components: [row] });
@@ -3028,7 +3074,7 @@ const UPGRADE_TYPE_MAP = {
 
 async function performHeistUpgrade(interaction, shortUpgradeType) {
   try {
-    const userId = interaction.user.id;
+    const userId = createCombinedId(interaction.user.id, interaction.guild.id);
     const user = await Users.findOne({ where: { user_id: userId } });
     if (!user) {
       return interaction.reply({
@@ -3242,10 +3288,10 @@ function createHeistUpgradeButtons(upgradeInfo) {
 }
 
 async function handleCooldowns(message) {
-  const userId = message.author.id;
-  const user = await Users.findOne({ where: { user_id: userId } });
+  const combinedId = createCombinedId(message.author.id, message.guild.id);
+  const user = await Users.findOne({ where: { user_id: combinedId } });
 
-  const upgrades = await getUserHeistUpgrades(userId);
+  const upgrades = await getUserHeistUpgrades(combinedId);
   const heistCooldown = calculateHeistCooldown(
     HEIST_COOLDOWN,
     upgrades[HEIST_UPGRADES.COOLDOWN_REDUCTION] || 0
@@ -3305,4 +3351,8 @@ async function handleCooldowns(message) {
     .setTimestamp();
 
   return message.reply({ embeds: [embed] });
+}
+
+function createCombinedId(userId, guildId) {
+  return `${userId}-${guildId}`;
 }
