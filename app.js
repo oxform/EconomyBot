@@ -19,6 +19,7 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
   ],
 });
+require("dotenv").config();
 
 const bankAccounts = new Collection();
 const interestCooldowns = new Collection();
@@ -416,7 +417,6 @@ async function addBankBalance(id, amount) {
 
 async function createUserIfNotExists(id) {
   let user = bankAccounts.get(id);
-  console.log("bankAccounts", bankAccounts);
   if (!user) {
     user = await Users.create({
       user_id: id,
@@ -466,9 +466,7 @@ initializeBankAccounts();
 
 function login() {
   client
-    .login(
-      "MTI3MzkzMTM0MjQ2MzIzODIxOA.GPcdim.KWlQvIrTJLtob2hm6Zl6yE8_PMFJuDpkO_7LLs"
-    )
+    .login(process.env.DISCORD_TOKEN)
     .then(() => console.log("Bot logged in successfully"))
     .catch((error) => {
       console.error("Failed to log in:", error);
@@ -1382,13 +1380,13 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   } else if (commandName === "heist") {
     const targetUser = message.mentions.users.first();
+    if (!targetUser) {
+      return message.reply("Please mention a user to heist.");
+    }
     const targetUserCombinedId = createCombinedId(
       targetUser.id,
       message.guild.id
     );
-    if (!targetUser) {
-      return message.reply("Please mention a user to heist.");
-    }
     if (targetUserCombinedId === combinedId) {
       return message.reply("You can't heist yourself!");
     }
@@ -1873,7 +1871,7 @@ client.on("interactionCreate", async (interaction) => {
     );
     const row = createLeaderboardButtons(showNetWorth);
 
-    await interaction.update({ embeds: [embed], components: [row] });
+    return await interaction.update({ embeds: [embed], components: [row] });
   }
 
   if (interaction.customId.startsWith("heist_upgrade_")) {
@@ -1900,10 +1898,10 @@ client.on("interactionCreate", async (interaction) => {
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
 
-      await interaction.update({ embeds: [embed], components: [] });
+      return await interaction.update({ embeds: [embed], components: [] });
     } catch (error) {
       console.error("Error collecting printer money:", error);
-      await interaction.reply({
+      return await interaction.reply({
         content:
           "An error occurred while collecting printer money. Please try again later.",
         ephemeral: true,
@@ -1951,16 +1949,16 @@ client.on("interactionCreate", async (interaction) => {
           .setFooter({ text: "Azus Bot" })
           .setTimestamp();
 
-        await interaction.update({ embeds: [embed], components: [] });
+        return await interaction.update({ embeds: [embed], components: [] });
       } else {
-        await interaction.reply({
+        return await interaction.reply({
           content: "No interest available to collect right now.",
           ephemeral: true,
         });
       }
     } catch (error) {
       console.error("Error collecting interest:", error);
-      await interaction.reply({
+      return await interaction.reply({
         content:
           "An error occurred while collecting interest. Please try again later.",
         ephemeral: true,
@@ -1981,11 +1979,10 @@ client.on("interactionCreate", async (interaction) => {
     const balance = await getBalance(userId);
 
     if (balance < bet) {
-      await interaction.reply({
+      return await interaction.reply({
         content: `You don't have enough money to play again. Your balance: 🪙${balance}`,
         ephemeral: true,
       });
-      return;
     }
 
     // Disable the button that was just clicked
@@ -2085,7 +2082,7 @@ client.on("interactionCreate", async (interaction) => {
     );
 
     // Update the message with the new embed and buttons
-    await interaction.update({ embeds: [embed], components: [row] });
+    return await interaction.update({ embeds: [embed], components: [row] });
   }
 });
 
@@ -2422,11 +2419,10 @@ async function playSlotsRound(interaction, betAmount) {
   const userBalance = await getBalance(userId);
 
   if (userBalance < betAmount) {
-    await interaction.reply({
+    return await interaction.reply({
       content: `You don't have enough coins to play. Your balance: 🪙${userBalance}`,
       ephemeral: true,
     });
-    return;
   }
 
   await addBalance(userId, Math.floor(-betAmount));
@@ -2464,7 +2460,10 @@ async function playSlotsRound(interaction, betAmount) {
 
   const newRow = new ActionRowBuilder().addComponents(playAgainButton);
 
-  await interaction.update({ embeds: [resultEmbed], components: [newRow] });
+  return await interaction.update({
+    embeds: [resultEmbed],
+    components: [newRow],
+  });
 }
 
 async function playCoinflip(message, userId, bet) {
@@ -3143,13 +3142,13 @@ async function performHeistUpgrade(interaction, shortUpgradeType) {
     const { embed, upgradeInfo } = await createHeistUpgradeEmbed(userId);
     const updatedRow = createHeistUpgradeButtons(upgradeInfo);
 
-    await interaction.update({
+    return await interaction.update({
       embeds: [embed],
       components: [updatedRow],
     });
   } catch (error) {
     console.error("Error in performHeistUpgrade:", error);
-    await interaction.reply({
+    return await interaction.reply({
       content:
         "An error occurred while processing your upgrade. Please try again later.",
       ephemeral: true,
