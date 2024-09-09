@@ -1443,12 +1443,44 @@ function getCardValue(card) {
 }
 
 function calculateHandValue(hand) {
-  let value = hand.reduce((total, card) => total + getCardValue(card), 0);
-  const aces = hand.filter((card) => card.value === "A").length;
-  for (let i = 0; i < aces; i++) {
-    if (value > 21) value -= 10;
+  let hardValue = 0;
+  let softValue = 0;
+  let aceCount = 0;
+
+  for (const card of hand) {
+    if (["J", "Q", "K"].includes(card.value)) {
+      hardValue += 10;
+      softValue += 10;
+    } else if (card.value === "A") {
+      aceCount++;
+      hardValue += 1;
+      softValue += 11;
+    } else {
+      const cardValue = parseInt(card.value);
+      hardValue += cardValue;
+      softValue += cardValue;
+    }
   }
-  return value;
+
+  // Adjust soft value if it's over 21
+  while (softValue > 21 && aceCount > 0) {
+    softValue -= 10;
+    aceCount--;
+  }
+
+  const isSoft = softValue <= 21 && softValue > hardValue;
+
+  return {
+    value: isSoft ? softValue : hardValue,
+    isSoft: isSoft,
+  };
+}
+
+function getHandValueString(handValue) {
+  if (handValue.isSoft) {
+    return `${handValue.value - 10}/${handValue.value}`;
+  }
+  return handValue.value.toString();
 }
 
 function dealCard(deck) {
@@ -1456,7 +1488,7 @@ function dealCard(deck) {
 }
 
 function playDealer(deck, dealerHand) {
-  while (calculateHandValue(dealerHand) < 17) {
+  while (calculateHandValue(dealerHand).value < 17) {
     dealerHand.push(dealCard(deck));
   }
 }
@@ -1494,10 +1526,15 @@ function createGameEmbed(
   userStats,
   bet
 ) {
-  const playerValue = calculateHandValue(playerHand);
-  const dealerValue = showDealerCard
+  const playerHandValue = calculateHandValue(playerHand);
+  const dealerHandValue = showDealerCard
     ? calculateHandValue(dealerHand)
-    : getCardValue(dealerHand[0]);
+    : { value: getCardValue(dealerHand[0]), isSoft: false };
+
+  const playerValueString = getHandValueString(playerHandValue);
+  const dealerValueString = showDealerCard
+    ? getHandValueString(dealerHandValue)
+    : dealerHandValue.value.toString();
 
   return new EmbedBuilder()
     .setColor("#2C2F33")
@@ -1508,19 +1545,21 @@ function createGameEmbed(
     .addFields(
       {
         name: "Your Hand",
-        value: playerHand.map(createCardEmoji).join(" ") + ` (${playerValue})`,
+        value:
+          playerHand.map(createCardEmoji).join(" ") + ` (${playerValueString})`,
         inline: true,
       },
       {
         name: "Dealer Hand",
         value: showDealerCard
-          ? dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`
-          : `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValue})`,
+          ? dealerHand.map(createCardEmoji).join(" ") +
+            ` (${dealerValueString})`
+          : `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValueString})`,
         inline: true,
       },
       { name: "\u200B", value: "\u200B" },
-      { name: "Your Value", value: playerValue.toString(), inline: true },
-      { name: "Dealer Value", value: dealerValue.toString(), inline: true },
+      { name: "Your Value", value: playerValueString, inline: true },
+      { name: "Dealer Value", value: dealerValueString, inline: true },
       { name: "Bet", value: `🪙${bet}`, inline: true },
       {
         name: "Win Streak",
@@ -1543,9 +1582,8 @@ async function createFinalEmbed(
   userId
 ) {
   const allPlayersBusted = results.every((result) => result.busted);
-  const dealerValue = allPlayersBusted
-    ? getCardValue(dealerHand[0])
-    : calculateHandValue(dealerHand);
+  const dealerHandValue = calculateHandValue(dealerHand);
+  const dealerValueString = getHandValueString(dealerHandValue);
   const newBalance = await getBalance(userId);
 
   const embed = new EmbedBuilder()
@@ -1556,19 +1594,22 @@ async function createFinalEmbed(
     .addFields({
       name: "Dealer Hand",
       value: allPlayersBusted
-        ? `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValue})`
-        : dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValue})`,
+        ? `${createCardEmoji(dealerHand[0])} 🂠 (${dealerValueString})`
+        : dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValueString})`,
       inline: false,
     });
 
   results.forEach((result, index) => {
-    const playerValue = calculateHandValue(result.hand);
+    const playerHandValue = calculateHandValue(result.hand);
+    const playerValueString = getHandValueString(playerHandValue);
     const handName =
       results.length > 1 ? `Your Hand ${index + 1}` : "Your Hand";
     embed.addFields(
       {
         name: `${handName}${result.doubledDown ? " (Doubled)" : ""}`,
-        value: result.hand.map(createCardEmoji).join(" ") + ` (${playerValue})`,
+        value:
+          result.hand.map(createCardEmoji).join(" ") +
+          ` (${playerValueString})`,
         inline: true,
       },
       { name: "Result", value: result.result, inline: true },
@@ -1579,7 +1620,6 @@ async function createFinalEmbed(
       }
     );
   });
-
   embed
     .addFields(
       {
@@ -1680,7 +1720,8 @@ async function playBlackjack(message, initialBet) {
   let splitCount = 0;
 
   // Check for player blackjack
-  if (calculateHandValue(hands[0]) === 21) {
+  const initialHandValue = calculateHandValue(hands[0]);
+  if (initialHandValue.value === 21) {
     const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
@@ -1731,7 +1772,7 @@ async function playBlackjack(message, initialBet) {
     switch (i.customId) {
       case "blackjack_hit":
         hands[currentHandIndex].push(dealCard(deck));
-        if (calculateHandValue(hands[currentHandIndex]) >= 21) {
+        if (calculateHandValue(hands[currentHandIndex]).value >= 21) {
           currentHandIndex++;
         }
         break;
@@ -1788,7 +1829,7 @@ async function playBlackjack(message, initialBet) {
     let totalPayout = 0;
 
     for (let i = 0; i < hands.length; i++) {
-      const playerValue = calculateHandValue(hands[i]);
+      const playerValue = calculateHandValue(hands[i]).value;
       let result;
       let payout;
 
@@ -1797,10 +1838,10 @@ async function playBlackjack(message, initialBet) {
         payout = -bets[i];
       } else {
         // Only play the dealer's hand if the player hasn't busted
-        if (calculateHandValue(dealerHand) < 18) {
+        if (calculateHandValue(dealerHand).value < 18) {
           playDealer(deck, dealerHand);
         }
-        const dealerValue = calculateHandValue(dealerHand);
+        const dealerValue = calculateHandValue(dealerHand).value;
 
         if (playerValue === 21 && hands[i].length === 2 && !doubledDown[i]) {
           result = "Blackjack! You win!";
