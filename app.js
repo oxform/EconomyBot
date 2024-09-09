@@ -1555,7 +1555,7 @@ function updateWinStreak(userId, totalPayout) {
 
   if (won) {
     userStats.winStreak++;
-    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.1, 2); // Cap at 2x
+    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.1, 1.5); // Cap at 1.5x
   } else if (!tie) {
     userStats.winStreak = 0;
     userStats.multiplier = 1;
@@ -1614,7 +1614,10 @@ function createGameEmbed(
       },
       {
         name: "Multiplier",
-        value: userStats.multiplier.toFixed(1) + "x",
+        value:
+          userStats.multiplier === 1.5
+            ? userStats.multiplier + "x (Max)"
+            : userStats.multiplier.toFixed(1) + "x",
         inline: true,
       }
     );
