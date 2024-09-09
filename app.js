@@ -26,6 +26,9 @@ const interestCooldowns = new Collection();
 const coinflipStats = new Map();
 const hoboCooldowns = new Map();
 const blackjackStats = new Map();
+const dailyTransferLimits = new Map();
+
+const DAILY_TRANSFER_LIMIT = 2500;
 
 function updateHoboCooldown(userId) {
   const now = Date.now();
@@ -1183,16 +1186,7 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   } else if (commandName === "transfer") {
-    // if user is "myola" then return
-    if (combinedId === "174087056211968000") {
-      return;
-    }
     const recipient = message.mentions.users.first();
-
-    const recipientCombinedId = createCombinedId(
-      recipient.id,
-      message.guild.id
-    );
 
     if (!recipient) {
       const embed = new EmbedBuilder()
@@ -1203,6 +1197,11 @@ client.on("messageCreate", async (message) => {
         .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
+
+    const recipientCombinedId = createCombinedId(
+      recipient.id,
+      message.guild.id
+    );
 
     if (!args[1]) {
       const embed = new EmbedBuilder()
@@ -1239,7 +1238,7 @@ client.on("messageCreate", async (message) => {
     try {
       let amount;
       if (amountArg === "all") {
-        amount = await getBalance(combinedId);
+        amount = Math.min(await getBalance(combinedId), DAILY_TRANSFER_LIMIT);
       } else {
         amount = parseInt(amountArg);
         if (isNaN(amount) || amount <= 0) {
@@ -1271,6 +1270,11 @@ client.on("messageCreate", async (message) => {
             name: `${recipient.username}'s New Balance`,
             value: `🪙${result.newReceiverBalance.toLocaleString()}`,
             inline: true,
+          },
+          {
+            name: "Remaining Daily Transfer Limit",
+            value: `🪙${result.remainingDailyLimit.toLocaleString()}`,
+            inline: false,
           }
         )
         .setFooter({ text: "Azus Bot" })
@@ -2230,6 +2234,14 @@ async function transferMoney(senderId, receiverId, amount) {
     throw new Error("Insufficient funds");
   }
 
+  // Check daily transfer limit
+  const dailyTransferred = dailyTransferLimits.get(senderId) || 0;
+  if (dailyTransferred + amount > DAILY_TRANSFER_LIMIT) {
+    throw new Error(
+      `Daily transfer limit of 🪙${DAILY_TRANSFER_LIMIT} exceeded`
+    );
+  }
+
   await Users.update(
     { balance: sender.balance - amount },
     { where: { user_id: senderId } }
@@ -2238,6 +2250,9 @@ async function transferMoney(senderId, receiverId, amount) {
     { balance: receiver.balance + amount },
     { where: { user_id: receiverId } }
   );
+
+  // Update daily transfer amount
+  dailyTransferLimits.set(senderId, dailyTransferred + amount);
 
   // Update local cache
   const senderAccount = bankAccounts.get(senderId);
@@ -2248,6 +2263,7 @@ async function transferMoney(senderId, receiverId, amount) {
   return {
     newSenderBalance: sender.balance - amount,
     newReceiverBalance: receiver.balance + amount,
+    remainingDailyLimit: DAILY_TRANSFER_LIMIT - (dailyTransferred + amount),
   };
 }
 
@@ -3410,3 +3426,9 @@ async function handleCooldowns(message) {
 function createCombinedId(userId, guildId) {
   return `${userId}-${guildId}`;
 }
+
+function resetDailyTransferLimits() {
+  dailyTransferLimits.clear();
+}
+
+setInterval(resetDailyTransferLimits, 16 * 60 * 60 * 1000);
