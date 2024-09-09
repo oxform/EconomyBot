@@ -566,7 +566,8 @@ client.on("messageCreate", async (message) => {
       .setFooter({ text: "Use !buy <item> to purchase" })
       .setTimestamp();
     return message.reply({ embeds: [embed] });
-  } else if (commandName === "buy") {
+  }
+  if (commandName === "buy") {
     const itemName = args.join(" ");
     const user = await getFullBalance(combinedId);
     if (!itemName) {
@@ -580,9 +581,12 @@ client.on("messageCreate", async (message) => {
       return message.reply("That item doesn't exist.");
     }
 
-    if (item.cost > user.bank) {
+    const totalBalance = user.wallet + user.bank;
+    if (item.cost > totalBalance) {
       return message.reply(
-        `You currently have 🪙${user.bank_balance}, but the ${item.name} costs 🪙${item.cost}!`
+        `You currently have 🪙${totalBalance.toLocaleString()} in total, but the ${
+          item.name
+        } costs 🪙${item.cost.toLocaleString()}!`
       );
     }
 
@@ -602,7 +606,19 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    await addBankBalance(combinedId, -item.cost);
+    // Deduct the cost from balance first, then bank if needed
+    let remainingCost = item.cost;
+    if (user.wallet >= remainingCost) {
+      await addBalance(combinedId, -remainingCost);
+      remainingCost = 0;
+    } else {
+      await addBalance(combinedId, -user.wallet);
+      remainingCost -= user.wallet;
+    }
+
+    if (remainingCost > 0) {
+      await addBankBalance(combinedId, -remainingCost);
+    }
 
     const userItem = await UserItems.findOne({
       where: { user_id: combinedId, item_id: item.id },
@@ -618,15 +634,26 @@ client.on("messageCreate", async (message) => {
       });
     }
 
+    const newBalance = await getFullBalance(combinedId);
+
     const embed = new EmbedBuilder()
       .setColor("#00ff00")
       .setTitle("Purchase Successful!")
       .setDescription(`You've bought: ${item.name}`)
       .addFields(
-        { name: "Cost", value: `🪙${item.cost}`, inline: true },
+        {
+          name: "Cost",
+          value: `🪙${item.cost.toLocaleString()}`,
+          inline: true,
+        },
+        {
+          name: "New Wallet Balance",
+          value: `🪙${newBalance.wallet.toLocaleString()}`,
+          inline: true,
+        },
         {
           name: "New Bank Balance",
-          value: `🪙${(user.bank - item.cost).toLocaleString()}`,
+          value: `🪙${newBalance.bank.toLocaleString()}`,
           inline: true,
         }
       )
@@ -2152,14 +2179,9 @@ async function calculatePrinterMoney(printers) {
 
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
-    const baseInterval = 2.5; // Base print interval in minutes
 
-    const interval = calculateSpeedUpgrade(baseInterval, printer.speed_level);
-    let outputBoost = calculateUpgradeEffect(
-      baseRate,
-      0.225,
-      printer.output_level
-    );
+    const interval = calculateSpeedUpgrade(printer.speed_level);
+    let outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
     const capacity = calculateCapacity(baseRate, printer.capacity_level);
 
     const minutesSinceLastCollection =
@@ -2191,14 +2213,9 @@ async function collectPrinterMoney(userId) {
 
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
-    const baseInterval = 2.5; // Base print interval in minutes
 
-    const interval = calculateSpeedUpgrade(baseInterval, printer.speed_level);
-    const outputBoost = calculateUpgradeEffect(
-      baseRate,
-      0.225,
-      printer.output_level
-    );
+    const interval = calculateSpeedUpgrade(printer.speed_level);
+    const outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
     const capacity = calculateCapacity(baseRate, printer.capacity_level);
 
     const minutesSinceLastCollection =
@@ -2664,14 +2681,16 @@ function getPrinterBaseRate(printerName) {
   return rates[printerName] || 1;
 }
 
-function calculateUpgradeEffect(baseEffect, increasePerLevel, level) {
+function calculateUpgradeEffect(baseEffect, level) {
+  const increasePerLevel = 0.25; // 25% increase per level
   if (level === 0) return baseEffect;
   return baseEffect * Math.pow(1 + increasePerLevel, level);
 }
 
-function calculateSpeedUpgrade(baseInterval, level) {
+function calculateSpeedUpgrade(level) {
+  const baseInterval = 5; // Base print interval in minutes
   const maxReduction = 0.8; // Maximum 75% reduction
-  const reductionPerLevel = 0.16; // 5% reduction per level
+  const reductionPerLevel = 0.14; // 12% reduction per level
   const reduction = Math.min(maxReduction, reductionPerLevel * level);
   return baseInterval * (1 - reduction);
 }
@@ -2686,7 +2705,12 @@ function calculateCapacity(baseRate, level) {
 function formatTime(minutes) {
   const mins = Math.floor(minutes);
   const secs = Math.round((minutes - mins) * 60);
-  return `${mins}m ${secs}s`;
+
+  if (secs === 0) {
+    return `${mins}m`;
+  } else {
+    return `${mins}m ${secs}s`;
+  }
 }
 
 async function createUpgradeEmbed(printer, user) {
@@ -2721,20 +2745,11 @@ async function createUpgradeEmbed(printer, user) {
     let currentEffect, nextEffect;
 
     if (upgrade.upgrade_type === "speed") {
-      const baseInterval = 2.5;
-      currentEffect = formatTime(
-        calculateSpeedUpgrade(baseInterval, currentLevel)
-      );
-      nextEffect = formatTime(calculateSpeedUpgrade(baseInterval, nextLevel));
+      currentEffect = formatTime(calculateSpeedUpgrade(currentLevel));
+      nextEffect = formatTime(calculateSpeedUpgrade(nextLevel));
     } else if (upgrade.upgrade_type === "output") {
-      currentEffect = calculateUpgradeEffect(
-        baseRate,
-        0.225,
-        currentLevel
-      ).toFixed(1);
-      nextEffect = calculateUpgradeEffect(baseRate, 0.225, nextLevel).toFixed(
-        1
-      );
+      currentEffect = calculateUpgradeEffect(baseRate, currentLevel).toFixed(1);
+      nextEffect = calculateUpgradeEffect(baseRate, nextLevel).toFixed(1);
     } else if (upgrade.upgrade_type === "capacity") {
       currentEffect = calculateCapacity(baseRate, currentLevel);
       nextEffect = calculateCapacity(baseRate, nextLevel);
