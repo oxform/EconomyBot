@@ -1116,8 +1116,9 @@ client.on("messageCreate", async (message) => {
     await handleDaily(message);
   } else if (commandName === "hobo") {
     const balance = await getFullBalance(combinedId);
+    const totalBalance = balance.wallet + balance.bank;
 
-    if (balance.wallet + balance.bank > 100) {
+    if (totalBalance > 100) {
       const embed = new EmbedBuilder()
         .setColor("#ff0000")
         .setTitle("Not Broke Enough")
@@ -1149,19 +1150,33 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const earnedAmount = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
-    await addBalance(combinedId, earnedAmount);
+    let earnedAmount;
+    let description;
+
+    const amountToAdd = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
+
+    if (totalBalance < 0) {
+      const debtCleared = Math.abs(Math.floor(totalBalance * 0.15));
+      earnedAmount = debtCleared;
+      await addBalance(combinedId, debtCleared + amountToAdd);
+      description = `A kind stranger notices your dire situation and offers to help. They clear 🪙${debtCleared} of your debt.`;
+    } else {
+      await addBalance(combinedId, amountToAdd);
+      description = `You begged on the streets and earned 🪙${earnedAmount}`;
+    }
 
     // Update cooldown only after successful execution
     updateHoboCooldown(combinedId);
 
+    const newBalance = await getBalance(combinedId);
+
     const embed = new EmbedBuilder()
       .setColor("#00ff00")
       .setTitle("Hobo Begging")
-      .setDescription(`You begged on the streets and earned 🪙${earnedAmount}`)
+      .setDescription(description)
       .addFields({
         name: "New Balance",
-        value: `🪙${earnedAmount.toLocaleString()}`,
+        value: `🪙${newBalance.toLocaleString()}`,
         inline: true,
       })
       .setFooter({ text: "Azus Bot" })
@@ -2338,14 +2353,13 @@ const SLOT_SYMBOLS = [
 const PAYOUTS = {
   "🍒🍒🍒": 5,
   "🍋🍋🍋": 10,
-  "🍊🍊🍊": 15,
-  "🍇🍇🍇": 25,
-  "🍀🍀🍀": 35,
-  "🌟🌟🌟": 40,
-  "💎💎💎": 50,
-  "💰💰💰": 75,
-  "👑👑👑": 100,
-  "7️⃣7️⃣7️⃣": 125,
+  "🍇🍇🍇": 15,
+  "🍀🍀🍀": 20,
+  "🌟🌟🌟": 25,
+  "💎💎💎": 30,
+  "💰💰💰": 35,
+  "👑👑👑": 50,
+  "7️⃣7️⃣7️⃣": 100,
   ANY2: 1.5, // Any 2 matching symbols
 };
 
