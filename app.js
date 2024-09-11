@@ -1514,7 +1514,7 @@ function calculateHandValue(hand) {
     aceCount--;
   }
 
-  const isSoft = softValue <= 21 && softValue > hardValue;
+  const isSoft = softValue <= 21 && softValue > hardValue && hardValue <= 21;
 
   return {
     value: isSoft ? softValue : hardValue,
@@ -1555,7 +1555,7 @@ function updateWinStreak(userId, totalPayout) {
 
   if (won) {
     userStats.winStreak++;
-    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.1, 1.5); // Cap at 1.5x
+    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.05, 2); // Cap at 2x
   } else if (!tie) {
     userStats.winStreak = 0;
     userStats.multiplier = 1;
@@ -1615,9 +1615,9 @@ function createGameEmbed(
       {
         name: "Multiplier",
         value:
-          userStats.multiplier === 1.5
+          userStats.multiplier === 2
             ? userStats.multiplier + "x (Max)"
-            : userStats.multiplier.toFixed(1) + "x",
+            : userStats.multiplier.toFixed(2) + "x",
         inline: true,
       }
     );
@@ -1631,8 +1631,17 @@ async function createFinalEmbed(
   userId
 ) {
   const allPlayersBusted = results.every((result) => result.busted);
-  const dealerHandValue = calculateHandValue(dealerHand);
-  const dealerValueString = getHandValueString(dealerHandValue);
+  let dealerHandValue;
+  let dealerValueString;
+
+  if (allPlayersBusted) {
+    // Only use the first (visible) card for dealer's hand value
+    dealerHandValue = calculateHandValue([dealerHand[0]]);
+    dealerValueString = getHandValueString(dealerHandValue);
+  } else {
+    dealerHandValue = calculateHandValue(dealerHand);
+    dealerValueString = getHandValueString(dealerHandValue);
+  }
   const newBalance = await getBalance(userId);
 
   const embed = new EmbedBuilder()
@@ -1693,7 +1702,7 @@ async function createFinalEmbed(
       },
       {
         name: "Multiplier",
-        value: userStats.multiplier.toFixed(1) + "x",
+        value: userStats.multiplier.toFixed(2) + "x",
         inline: true,
       }
     )
