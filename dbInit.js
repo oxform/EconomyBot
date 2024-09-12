@@ -30,7 +30,7 @@ sequelize
       { name: "Silver Printer", cost: 10000, base_rate: 3 },
       { name: "Gold Printer", cost: 25000, base_rate: 6 },
       { name: "Platinum Printer", cost: 75000, base_rate: 15 },
-      { name: "Titanium Printer", cost: 125000, base_rate: 25 },
+      // { name: "Titanium Printer", cost: 125000, base_rate: 25 },
       { name: "Diamond Printer", cost: 250000, base_rate: 40 },
       { name: "Quantum Printer", cost: 500000, base_rate: 100 },
       { name: "Neutronium Printer", cost: 1000000, base_rate: 250 },

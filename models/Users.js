@@ -21,6 +21,11 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 0,
         allowNull: false,
       },
+      prestige_tokens: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        allowNull: false,
+      },
       last_daily: {
         type: DataTypes.DATE,
         allowNull: true,

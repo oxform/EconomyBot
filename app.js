@@ -52,7 +52,6 @@ const allPrinters = [
   "Silver Printer",
   "Gold Printer",
   "Platinum Printer",
-  "Titanium Printer",
   "Diamond Printer",
   "Quantum Printer",
   "Neutronium Printer",
@@ -905,6 +904,7 @@ client.on("messageCreate", async (message) => {
       const interestInfo = await calculateInterest(targetCombinedId);
       const printers = await getUserPrinters(targetCombinedId);
       const printerMoney = await calculatePrinterMoney(printers);
+      const netWorth = await calculateNetWorth(targetCombinedId);
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
@@ -932,8 +932,7 @@ client.on("messageCreate", async (message) => {
               inline: true,
             }
           )
-          .setFooter({ text: "Azus Bot • Use buttons below to collect" })
-          .setTimestamp();
+          .setFooter({ text: `Net Worth • 🪙${netWorth.toLocaleString()}` });
 
         if (
           account.accumulatedInterest > 0 ||
@@ -1439,6 +1438,8 @@ client.on("messageCreate", async (message) => {
     await handleHeist(message, targetUser);
   } else if (commandName === "cooldowns" || commandName === "cd") {
     await handleCooldowns(message);
+  } else if (commandName === "prestige") {
+    await handlePrestige(message);
   }
 });
 
@@ -2681,12 +2682,11 @@ function calculateUpgradeCost(baseCost, level) {
 
 function getPrinterBaseRate(printerName) {
   const rates = {
-    "Bronze Printer": 1,
-    "Silver Printer": 3,
-    "Gold Printer": 6,
-    "Platinum Printer": 15,
-    "Titanium Printer": 25,
-    "Diamond Printer": 40,
+    "Bronze Printer": 3,
+    "Silver Printer": 7,
+    "Gold Printer": 14,
+    "Platinum Printer": 25,
+    "Diamond Printer": 50,
     "Quantum Printer": 100,
     "Neutronium Printer": 250,
   };
@@ -2700,9 +2700,9 @@ function calculateUpgradeEffect(baseEffect, level) {
 }
 
 function calculateSpeedUpgrade(level) {
-  const baseInterval = 5; // Base print interval in minutes
-  const maxReduction = 0.8; // Maximum 75% reduction
-  const reductionPerLevel = 0.14; // 12% reduction per level
+  const baseInterval = 3; // Base print interval in minutes
+  const maxReduction = 0.8; // Maximum reduction
+  const reductionPerLevel = 0.12; // Reduction per level
   const reduction = Math.min(maxReduction, reductionPerLevel * level);
   return baseInterval * (1 - reduction);
 }
@@ -2831,8 +2831,7 @@ function getPrinterIcon(printerName) {
     "Bronze Printer": "🟤",
     "Silver Printer": "⚪",
     "Gold Printer": "🟡",
-    "Platinum Printer": "🔷", // Using white circle as platinum doesn't have a specific emoji
-    "Titanium Printer": "🔶",
+    "Platinum Printer": "🔷",
     "Diamond Printer": "💎",
     "Quantum Printer": "⚛️",
     "Neutronium Printer": "🌠",
@@ -3458,4 +3457,183 @@ function resetDailyTransferLimits() {
   dailyTransferLimits.clear();
 }
 
-setInterval(resetDailyTransferLimits, 16 * 60 * 60 * 1000);
+const PRESTIGE_THRESHOLD = 10000000; // 10 million
+
+// Update this function to handle the prestige process
+async function handlePrestige(message) {
+  const userId = createCombinedId(message.author.id, message.guild.id);
+  const netWorth = await calculateNetWorth(userId);
+  const user = await Users.findOne({ where: { user_id: userId } });
+
+  if (!user) {
+    return message.reply(
+      "You don't have an account yet. Start playing to create one!"
+    );
+  }
+
+  if (netWorth < PRESTIGE_THRESHOLD) {
+    const embed = new EmbedBuilder()
+      .setColor("#ff0000")
+      .setTitle("Prestige Not Available")
+      .setDescription(
+        `You need a net worth of 🪙${PRESTIGE_THRESHOLD.toLocaleString()} to prestige.`
+      )
+      .addFields(
+        {
+          name: "Your Net Worth",
+          value: `🪙${netWorth.toLocaleString()}`,
+          inline: true,
+        },
+        {
+          name: "Required Net Worth",
+          value: `🪙${PRESTIGE_THRESHOLD.toLocaleString()}`,
+          inline: true,
+        }
+      )
+      .setFooter({ text: "Keep growing your wealth!" })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
+
+  const confirmEmbed = new EmbedBuilder()
+    .setColor("#ffa500")
+    .setTitle("Confirm Prestige")
+    .setDescription(
+      "Are you sure you want to prestige? This will reset all your progress but award you a prestige token."
+    )
+    .addFields(
+      {
+        name: "Current Net Worth",
+        value: `🪙${netWorth.toLocaleString()}`,
+        inline: true,
+      },
+      {
+        name: "Current Prestige Tokens",
+        value: user.prestige_tokens.toString(),
+        inline: true,
+      },
+      {
+        name: "New Prestige Tokens",
+        value: (user.prestige_tokens + 1).toString(),
+        inline: true,
+      }
+    )
+    .setFooter({ text: "This action cannot be undone!" })
+    .setTimestamp();
+
+  const confirmButton = new ButtonBuilder()
+    .setCustomId("confirm_prestige")
+    .setLabel("Confirm Prestige")
+    .setStyle(ButtonStyle.Danger);
+
+  const cancelButton = new ButtonBuilder()
+    .setCustomId("cancel_prestige")
+    .setLabel("Cancel")
+    .setStyle(ButtonStyle.Secondary);
+
+  const row = new ActionRowBuilder().addComponents(confirmButton, cancelButton);
+
+  const reply = await message.reply({
+    embeds: [confirmEmbed],
+    components: [row],
+  });
+
+  const filter = (i) => i.user.id === message.author.id;
+  const collector = reply.createMessageComponentCollector({
+    filter,
+    time: 30000,
+  });
+
+  collector.on("collect", async (i) => {
+    if (i.customId === "confirm_prestige") {
+      await performPrestige(userId);
+      const successEmbed = new EmbedBuilder()
+        .setColor("#00ff00")
+        .setTitle("Prestige Successful!")
+        .setDescription("You have successfully prestiged!")
+        .addFields(
+          {
+            name: "New Prestige Tokens",
+            value: (user.prestige_tokens + 1).toString(),
+            inline: true,
+          },
+          { name: "New Net Worth", value: "🪙0", inline: true }
+        )
+        .setFooter({ text: "Your journey begins anew!" })
+        .setTimestamp();
+
+      await i.update({ embeds: [successEmbed], components: [] });
+    } else if (i.customId === "cancel_prestige") {
+      const cancelEmbed = new EmbedBuilder()
+        .setColor("#0099ff")
+        .setTitle("Prestige Cancelled")
+        .setDescription(
+          "You have decided not to prestige. Your progress remains unchanged."
+        )
+        .setFooter({ text: "You can prestige anytime you're ready!" })
+        .setTimestamp();
+
+      await i.update({ embeds: [cancelEmbed], components: [] });
+    }
+  });
+
+  collector.on("end", (collected) => {
+    if (collected.size === 0) {
+      const timeoutEmbed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("Prestige Cancelled")
+        .setDescription(
+          "You did not respond in time. Your progress remains unchanged."
+        )
+        .setFooter({ text: "You can try to prestige again anytime!" })
+        .setTimestamp();
+
+      reply.edit({ embeds: [timeoutEmbed], components: [] });
+    }
+  });
+}
+
+async function performPrestige(userId) {
+  try {
+    // Increment prestige tokens and reset user's progress
+    const [updatedRowsCount, updatedRows] = await Users.update(
+      {
+        prestige_tokens: Users.sequelize.literal("prestige_tokens + 1"),
+        balance: 0,
+        bank_balance: 0,
+        accumulated_interest: 0,
+        last_daily: null,
+        last_crime: null,
+        last_rob: null,
+        last_work: null,
+        last_heist: null,
+        last_heisted: null,
+      },
+      {
+        where: { user_id: userId },
+        returning: true,
+      }
+    );
+
+    if (updatedRowsCount === 0) {
+      throw new Error("User not found or update failed");
+    }
+
+    // Delete all user items
+    await UserItems.destroy({ where: { user_id: userId } });
+
+    // Clear local caches
+    bankAccounts.delete(userId);
+    interestCooldowns.delete(userId);
+    coinflipStats.delete(userId);
+    hoboCooldowns.delete(userId);
+    blackjackStats.delete(userId);
+    dailyTransferLimits.delete(userId);
+
+    console.log(`Prestige successful for user ${userId}`);
+  } catch (error) {
+    console.error(`Error during prestige for user ${userId}:`, error);
+    throw error;
+  }
+}
