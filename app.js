@@ -444,6 +444,7 @@ async function getFullBalance(userId) {
       balance: 0,
       bank_balance: 0,
       accumulated_interest: 0,
+      prestige_tokens: 0,
     },
   });
 
@@ -451,6 +452,7 @@ async function getFullBalance(userId) {
     wallet: user.balance || 0,
     bank: user.bank_balance || 0,
     accumulatedInterest: user.accumulated_interest,
+    prestigeTokens: user.prestige_tokens || 0,
   };
 }
 
@@ -924,6 +926,11 @@ client.on("messageCreate", async (message) => {
             {
               name: "Total",
               value: `🪙 ${(account.bank + account.wallet).toLocaleString()}`,
+              inline: true,
+            },
+            {
+              name: "Prestige",
+              value: `🎖️ ${account.prestigeTokens}`,
               inline: true,
             },
             {
@@ -1524,7 +1531,7 @@ function calculateHandValue(hand) {
 }
 
 function getHandValueString(handValue) {
-  if (handValue.isSoft) {
+  if (handValue.isSoft && handValue.value < 21) {
     return `${handValue.value - 10}/${handValue.value}`;
   }
   return handValue.value.toString();
@@ -2702,7 +2709,7 @@ function calculateUpgradeEffect(baseEffect, level) {
 function calculateSpeedUpgrade(level) {
   const baseInterval = 3; // Base print interval in minutes
   const maxReduction = 0.8; // Maximum reduction
-  const reductionPerLevel = 0.12; // Reduction per level
+  const reductionPerLevel = 0.1; // Reduction per level
   const reduction = Math.min(maxReduction, reductionPerLevel * level);
   return baseInterval * (1 - reduction);
 }
@@ -3098,7 +3105,7 @@ const HEIST_COOLDOWN = 14 * 60 * 60 * 1000;
 const BASE_WIRES = 5;
 
 // Base percentage of bank stolen
-const BASE_STEAL_PERCENTAGE = 5;
+const BASE_STEAL_PERCENTAGE = 10;
 
 // Heist upgrades
 const HEIST_UPGRADES = {
@@ -3457,7 +3464,7 @@ function resetDailyTransferLimits() {
   dailyTransferLimits.clear();
 }
 
-const PRESTIGE_THRESHOLD = 10000000; // 10 million
+const PRESTIGE_THRESHOLD = 5000000; // 5 million
 
 // Update this function to handle the prestige process
 async function handlePrestige(message) {
