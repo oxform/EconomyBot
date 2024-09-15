@@ -1198,7 +1198,7 @@ client.on("messageCreate", async (message) => {
       description = `A kind stranger notices your dire situation and offers to help. They clear 🪙${debtCleared} of your debt.`;
     } else {
       await addBalance(combinedId, amountToAdd);
-      description = `You begged on the streets and earned 🪙${earnedAmount}`;
+      description = `You begged on the streets and earned 🪙${amountToAdd}`;
     }
 
     // Update cooldown only after successful execution
@@ -1788,7 +1788,7 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 2 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
@@ -2701,7 +2701,7 @@ function getPrinterBaseRate(printerName) {
 }
 
 function calculateUpgradeEffect(baseEffect, level) {
-  const increasePerLevel = 0.25; // 25% increase per level
+  const increasePerLevel = 0.2; // Increase per level
   if (level === 0) return baseEffect;
   return baseEffect * Math.pow(1 + increasePerLevel, level);
 }
@@ -2715,8 +2715,8 @@ function calculateSpeedUpgrade(level) {
 }
 
 function calculateCapacity(baseRate, level) {
-  const baseCapacity = baseRate * 100;
-  const multiplier = 1.5; // Exponential growth multiplier
+  const baseCapacity = baseRate * 75;
+  const multiplier = 1.4; // Exponential growth multiplier
   const increase = baseCapacity * Math.pow(multiplier, level); // Exponential increase
   return Math.floor(increase);
 }
@@ -2961,6 +2961,7 @@ async function handleHeist(message, targetUser) {
   const failureImageUrls = [
     "https://media1.tenor.com/m/nw830_b_6LYAAAAd/sad.gif",
     "https://i.imgur.com/iL1MXLu.gif",
+    "https://media.tenor.com/IFQfIfMO01MAAAAM/bolaubee.gif",
   ];
 
   const embed = new EmbedBuilder()
