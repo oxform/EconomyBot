@@ -27,6 +27,7 @@ const coinflipStats = new Map();
 const hoboCooldowns = new Map();
 const blackjackStats = new Map();
 const dailyTransferLimits = new Map();
+const activeBlackjackPlayers = new Set();
 
 const DAILY_TRANSFER_LIMIT = 2500;
 
@@ -897,6 +898,7 @@ client.on("messageCreate", async (message) => {
     commandName === "bal"
   ) {
     try {
+      const targetMember = message.mentions.members.first() || message.member;
       const targetUser = message.mentions.users.first() || message.author;
       const targetCombinedId = createCombinedId(
         targetUser.id,
@@ -907,11 +909,12 @@ client.on("messageCreate", async (message) => {
       const printers = await getUserPrinters(targetCombinedId);
       const printerMoney = await calculatePrinterMoney(printers);
       const netWorth = await calculateNetWorth(targetCombinedId);
+      const level = await calculateLevel(targetCombinedId);
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
           .setColor("#3498db")
-          .setTitle(`🏦 Balance - ${targetUser.username}`)
+          .setTitle(`🏦 ${targetMember.displayName}'s Balance • Level ${level}`)
           .addFields(
             {
               name: "Wallet",
@@ -926,11 +929,6 @@ client.on("messageCreate", async (message) => {
             {
               name: "Total",
               value: `🪙 ${(account.bank + account.wallet).toLocaleString()}`,
-              inline: true,
-            },
-            {
-              name: "Prestige",
-              value: `🎖️ ${account.prestigeTokens}`,
               inline: true,
             },
             {
@@ -989,25 +987,36 @@ client.on("messageCreate", async (message) => {
             inline: false,
           });
         }
-
         const isOwnAccount = targetCombinedId === combinedId;
 
         if (isOwnAccount) {
-          const collectButton = new ButtonBuilder()
-            .setCustomId("collect_interest")
-            .setLabel("Collect Interest")
-            .setStyle(ButtonStyle.Primary)
-            .setDisabled(interestInfo.accumulatedInterest <= 0);
-
           const collectPrintersButton = new ButtonBuilder()
             .setCustomId("collect_printers")
             .setLabel("Collect Printers")
             .setStyle(ButtonStyle.Success)
             .setDisabled(printerMoney.totalReady <= 0);
 
+          const collectButton = new ButtonBuilder()
+            .setCustomId("collect_interest")
+            .setLabel("Collect Interest")
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(interestInfo.accumulatedInterest <= 0);
+
+          const viewPassivesButton = new ButtonBuilder()
+            .setCustomId(`view_passives_${targetCombinedId}`)
+            .setLabel("View Passives")
+            .setStyle(ButtonStyle.Secondary);
+
+          const viewPrestigeButton = new ButtonBuilder()
+            .setCustomId(`view_prestige_${targetCombinedId}`)
+            .setLabel("View Prestige")
+            .setStyle(ButtonStyle.Secondary);
+
           const row = new ActionRowBuilder().addComponents(
+            collectPrintersButton,
             collectButton,
-            collectPrintersButton
+            viewPassivesButton,
+            viewPrestigeButton
           );
 
           message.reply({ embeds: [embed], components: [row] });
@@ -1192,10 +1201,10 @@ client.on("messageCreate", async (message) => {
     const amountToAdd = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
 
     if (totalBalance < 0) {
-      const debtCleared = Math.abs(Math.floor(totalBalance * 0.15));
-      earnedAmount = debtCleared;
-      await addBalance(combinedId, debtCleared + amountToAdd);
-      description = `A kind stranger notices your dire situation and offers to help. They clear 🪙${debtCleared} of your debt.`;
+      const debtCleared = Math.abs(totalBalance * 0.15);
+      earnedAmount = Math.floor(debtCleared + amountToAdd);
+      await addBalance(combinedId, earnedAmount);
+      description = `A kind stranger notices your dire situation and offers to help. They clear 🪙${earnedAmount} of your debt.`;
     } else {
       await addBalance(combinedId, amountToAdd);
       description = `You begged on the streets and earned 🪙${amountToAdd}`;
@@ -1552,24 +1561,31 @@ function createCardEmoji(card) {
   return `${card.value}${suitEmojis[card.suit]}`;
 }
 
-function updateWinStreak(userId, totalPayout) {
-  const won = totalPayout > 0;
-  const tie = totalPayout === 0;
-
+function updateWinStreak(userId, results) {
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
     multiplier: 1,
   };
 
-  if (won) {
-    userStats.winStreak++;
-    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.05, 2); // Cap at 2x
-  } else if (!tie) {
+  const winCount = results.filter((result) => result.payout > 0).length;
+  const lossCount = results.filter((result) => result.payout < 0).length;
+
+  if (winCount > 0 && lossCount === 0) {
+    // Player won all hands
+    userStats.winStreak += winCount; // Increase streak by number of hands won
+    const multiplierIncrease = 0.05 * winCount; // Increase multiplier by 0.05 for each hand won
+    userStats.multiplier = Math.min(
+      1 + userStats.winStreak * multiplierIncrease,
+      2
+    ); // Cap at 2x
+  } else if (lossCount > 0) {
+    // Player lost at least one hand
     userStats.winStreak = 0;
     userStats.multiplier = 1;
   }
 
   blackjackStats.set(userId, userStats);
+  return userStats;
 }
 
 function createGameEmbed(
@@ -1643,7 +1659,6 @@ async function createFinalEmbed(
   let dealerValueString;
 
   if (allPlayersBusted) {
-    // Only use the first (visible) card for dealer's hand value
     dealerHandValue = calculateHandValue([dealerHand[0]]);
     dealerValueString = getHandValueString(dealerHandValue);
   } else {
@@ -1652,11 +1667,22 @@ async function createFinalEmbed(
   }
   const newBalance = await getBalance(userId);
 
+  let title = "Blackjack Result";
+  let passiveTriggered = results.some((result) =>
+    result.result.includes("Loss Prevented")
+  );
+  let description = "";
+  if (results.some((result) => result.result.includes("Loss Prevented"))) {
+    title = "Blackjack: Passive Triggered!";
+    description =
+      "Loss Prevention: 1% chance to nullify losses from gambling games activated.";
+  }
+
   const embed = new EmbedBuilder()
     .setColor(
       totalPayout > 0 ? "#00ff00" : totalPayout < 0 ? "#ff0000" : "#ffff00"
     )
-    .setTitle("Blackjack Result")
+    .setTitle(passiveTriggered ? "Blackjack: Passive Triggered!" : title)
     .addFields({
       name: "Dealer Hand",
       value: allPlayersBusted
@@ -1664,6 +1690,12 @@ async function createFinalEmbed(
         : dealerHand.map(createCardEmoji).join(" ") + ` (${dealerValueString})`,
       inline: false,
     });
+
+  if (passiveTriggered) {
+    embed.setDescription(
+      "Loss Prevention: 1% chance to nullify losses from gambling games activated."
+    );
+  }
 
   results.forEach((result, index) => {
     const playerHandValue = calculateHandValue(result.hand);
@@ -1686,6 +1718,7 @@ async function createFinalEmbed(
       }
     );
   });
+
   embed
     .addFields(
       {
@@ -1771,6 +1804,16 @@ function canSplit(card1, card2) {
 
 async function playBlackjack(message, initialBet) {
   const userId = createCombinedId(message.author.id, message.guild.id);
+
+  // Check if the user is already playing blackjack
+  if (activeBlackjackPlayers.has(userId)) {
+    return message.reply(
+      "You're already in a blackjack game. Finish that one first!"
+    );
+  }
+
+  // Add the user to the active players set
+  activeBlackjackPlayers.add(userId);
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
     multiplier: 1,
@@ -1788,19 +1831,24 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 2 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
-    updateWinStreak(userId, true);
+    const results = [
+      {
+        hand: hands[0],
+        result: "Blackjack",
+        payout: blackjackPayout,
+        doubledDown: false,
+        busted: false,
+      },
+    ];
+
+    const updatedUserStats = updateWinStreak(userId, results);
+
     const finalEmbed = await createFinalEmbed(
-      [
-        {
-          hand: hands[0],
-          result: "Blackjack! You win big!",
-          payout: blackjackPayout,
-        },
-      ],
+      results,
       dealerHand,
-      userStats,
+      updatedUserStats,
       blackjackPayout,
       initialBet,
       userId
@@ -1852,13 +1900,6 @@ async function playBlackjack(message, initialBet) {
         currentHandIndex++;
         break;
       case "blackjack_split":
-        if (splitCount >= 3) {
-          await i.reply({
-            content: "You can only split up to 3 times.",
-            ephemeral: true,
-          });
-          return;
-        }
         const newHand = [hands[currentHandIndex].pop()];
         hands[currentHandIndex].push(dealCard(deck));
         newHand.push(dealCard(deck));
@@ -1928,7 +1969,10 @@ async function playBlackjack(message, initialBet) {
       }
 
       if (payout > 0) {
-        payout *= userStats.multiplier;
+        payout = Math.floor(payout * userStats.multiplier);
+      } else if (payout < 0 && (await applyGamblingPassive(userId))) {
+        payout = 0;
+        result += " (Loss Prevented)";
       }
 
       totalPayout += payout;
@@ -1942,16 +1986,18 @@ async function playBlackjack(message, initialBet) {
     }
 
     await addBalance(userId, Math.floor(totalPayout));
-    updateWinStreak(userId, totalPayout);
+    const updatedUserStats = updateWinStreak(userId, results);
 
     const finalEmbed = await createFinalEmbed(
       results,
       dealerHand,
-      userStats,
+      updatedUserStats,
       totalPayout,
       initialBet,
       userId
     );
+    activeBlackjackPlayers.delete(userId);
+
     await gameMessage.edit({ embeds: [finalEmbed], components: [] });
   });
 }
@@ -1964,7 +2010,117 @@ client.on("interactionCreate", async (interaction) => {
   const userId = interaction.user.id;
   const combinedId = createCombinedId(userId, guildId);
 
-  if (
+  if (interaction.customId.startsWith("view_passives_")) {
+    const targetCombinedId = interaction.customId.split("_")[2];
+    const level = await calculateLevel(targetCombinedId);
+    const passives = await getPassives(level);
+
+    const unlockedPassives = passives.filter((p) => p.unlocked);
+    const lockedPassives = passives.filter((p) => !p.unlocked);
+
+    let passivesText = "";
+    if (unlockedPassives.length > 0) {
+      passivesText += "**Unlocked Passives:**\n";
+      passivesText += unlockedPassives
+        .map((p) => `• Level ${p.level}: ${p.description}`)
+        .join("\n");
+    }
+    if (lockedPassives.length > 0) {
+      if (unlockedPassives.length > 0) passivesText += "\n\n";
+      passivesText += "**Locked Passives:**\n";
+      passivesText += lockedPassives
+        .map((p) => `• Level ${p.level}: ${p.description}`)
+        .join("\n");
+    }
+
+    const passivesEmbed = new EmbedBuilder()
+      .setColor("#3498db")
+      .setTitle(`Passives - Level ${level}`)
+      .setDescription(passivesText || "No passives available")
+      .setFooter({ text: "Keep leveling up to unlock more passives!" })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [passivesEmbed], ephemeral: true });
+  } else if (interaction.customId.startsWith("view_prestige_")) {
+    const targetCombinedId = interaction.customId.split("_")[2];
+    const user = await Users.findOne({ where: { user_id: targetCombinedId } });
+
+    if (!user) {
+      return interaction.reply({ content: "User not found.", ephemeral: true });
+    }
+
+    const netWorth = await calculateNetWorth(targetCombinedId);
+
+    const prestigeLevel = user.prestige_tokens;
+    const currentBenefits = PRESTIGE_BENEFITS.filter(
+      (benefit) => benefit.level <= prestigeLevel
+    );
+    const nextBenefit = PRESTIGE_BENEFITS.find(
+      (benefit) => benefit.level > prestigeLevel
+    );
+
+    let prestigeText = `You are currently at Prestige Level ${prestigeLevel}.\n\n`;
+
+    if (currentBenefits.length > 0) {
+      prestigeText += "**Current Benefits:**\n";
+      prestigeText += currentBenefits
+        .map((benefit) => `• ${benefit.description}`)
+        .join("\n");
+    }
+
+    if (nextBenefit) {
+      prestigeText += `\n\n**Next Prestige Benefit (Level ${nextBenefit.level}):**\n`;
+      prestigeText += `• ${nextBenefit.description}`;
+    } else {
+      prestigeText += "\n\nYou've reached the maximum prestige level!";
+    }
+
+    const canPrestige = netWorth >= PRESTIGE_THRESHOLD;
+
+    let embedColor, embedTitle, embedDescription;
+
+    if (canPrestige) {
+      embedColor = "#00FF00";
+      embedTitle = "Prestige Available";
+      embedDescription = "You have reached the required net worth to prestige!";
+    } else {
+      embedColor = "#FF0000";
+      embedTitle = "Prestige Not Available";
+      embedDescription = `You need a net worth of 🪙${PRESTIGE_THRESHOLD.toLocaleString()} to prestige.`;
+    }
+
+    const prestigeEmbed = new EmbedBuilder()
+      .setColor(embedColor)
+      .setTitle(embedTitle)
+      .setDescription(embedDescription)
+      .addFields(
+        {
+          name: "Your Net Worth",
+          value: `🪙${netWorth.toLocaleString()}`,
+          inline: true,
+        },
+        {
+          name: "Required Net Worth",
+          value: `🪙${PRESTIGE_THRESHOLD.toLocaleString()}`,
+          inline: true,
+        },
+        {
+          name: "Current Prestige Level",
+          value: user.prestige_tokens.toString(),
+          inline: true,
+        }
+      )
+      .setFooter({
+        text: canPrestige
+          ? "Ready to take the next step?"
+          : "Keep growing your wealth!",
+      })
+      .setTimestamp();
+
+    // Add information ab
+
+    await interaction.reply({ embeds: [prestigeEmbed], ephemeral: true });
+  } else if (
     interaction.customId === "leaderboard_net_worth" ||
     interaction.customId === "leaderboard_total_cash"
   ) {
@@ -2260,6 +2416,10 @@ async function collectPrinterMoney(userId) {
 }
 
 async function transferMoney(senderId, receiverId, amount) {
+  if (amount <= 0) {
+    throw new Error("You cannot transfer zero or negative amounts of money.");
+  }
+
   const sender = await Users.findOne({ where: { user_id: senderId } });
   const receiver = await Users.findOne({ where: { user_id: receiverId } });
 
@@ -2578,7 +2738,6 @@ async function playCoinflip(message, userId, bet) {
   let userStats = coinflipStats.get(userId) || { streak: 0, winChance: 50 };
 
   const win = Math.random() * 100 < userStats.winChance;
-
   if (win) {
     await addBalance(userId, Math.floor(bet));
     userStats.streak++;
@@ -2623,39 +2782,70 @@ async function playCoinflip(message, userId, bet) {
       components: [row],
     });
   } else {
-    await addBalance(userId, Math.floor(-bet));
-    userStats = { streak: 0, winChance: 50 };
-    coinflipStats.set(userId, userStats);
+    const isSavedByGamblingPassive = await applyGamblingPassive(userId);
 
-    const newBalance = await getBalance(userId);
+    if (isSavedByGamblingPassive) {
+      // Passive triggered, no loss
+      const newBalance = await getBalance(userId);
+      const embed = new EmbedBuilder()
+        .setColor("#FFFF00")
+        .setTitle(`Coinflip: Passive Triggered!`)
+        .setDescription(
+          `Loss prevented: Your 1% chance to avoid gambling losses activated.`
+        )
+        .addFields(
+          { name: "Bet Amount", value: `🪙${bet}`, inline: true },
+          {
+            name: "Balance",
+            value: `🪙${newBalance.toLocaleString()}`,
+            inline: true,
+          },
+          { name: "Streak", value: userStats.streak.toString(), inline: true },
+          {
+            name: "Next Flip Win Chance",
+            value: `${userStats.winChance}%`,
+            inline: true,
+          }
+        )
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
 
-    const loseEmbed = new EmbedBuilder()
-      .setColor("#ff0000")
-      .setTitle(`Coinflip: You Lost!`)
-      .setDescription(`You lost 🪙${bet}`)
-      .addFields(
-        {
-          name: "New Balance",
-          value: `🪙${newBalance.toLocaleString()}`,
-          inline: true,
-        },
-        { name: "Streak", value: "0", inline: true },
-        { name: "Next Flip Win Chance", value: "50%", inline: true }
-      )
-      .setFooter({ text: "Azus Bot" })
-      .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    } else {
+      await addBalance(userId, Math.floor(-bet));
+      userStats = { streak: 0, winChance: 50 };
+      coinflipStats.set(userId, userStats);
 
-    const playAgainButton = new ButtonBuilder()
-      .setCustomId(`coinflip_again_${bet}`)
-      .setLabel("Play Again")
-      .setStyle(ButtonStyle.Success);
+      const newBalance = await getBalance(userId);
 
-    const row = new ActionRowBuilder().addComponents(playAgainButton);
+      const loseEmbed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle(`Coinflip: You Lost!`)
+        .setDescription(`You lost 🪙${bet}`)
+        .addFields(
+          {
+            name: "New Balance",
+            value: `🪙${newBalance.toLocaleString()}`,
+            inline: true,
+          },
+          { name: "Streak", value: "0", inline: true },
+          { name: "Next Flip Win Chance", value: "50%", inline: true }
+        )
+        .setFooter({ text: "Azus Bot" })
+        .setTimestamp();
 
-    return await message.channel.send({
-      embeds: [loseEmbed],
-      components: [row],
-    });
+      const playAgainButton = new ButtonBuilder()
+        .setCustomId(`coinflip_again_${bet}`)
+        .setLabel("Play Again")
+        .setStyle(ButtonStyle.Success);
+
+      const row = new ActionRowBuilder().addComponents(playAgainButton);
+
+      return await message.channel.send({
+        embeds: [loseEmbed],
+        components: [row],
+      });
+    }
   }
 }
 
@@ -2701,7 +2891,7 @@ function getPrinterBaseRate(printerName) {
 }
 
 function calculateUpgradeEffect(baseEffect, level) {
-  const increasePerLevel = 0.2; // Increase per level
+  const increasePerLevel = 0.25; // 25% increase per level
   if (level === 0) return baseEffect;
   return baseEffect * Math.pow(1 + increasePerLevel, level);
 }
@@ -2715,8 +2905,8 @@ function calculateSpeedUpgrade(level) {
 }
 
 function calculateCapacity(baseRate, level) {
-  const baseCapacity = baseRate * 75;
-  const multiplier = 1.4; // Exponential growth multiplier
+  const baseCapacity = baseRate * 100;
+  const multiplier = 1.5; // Exponential growth multiplier
   const increase = baseCapacity * Math.pow(multiplier, level); // Exponential increase
   return Math.floor(increase);
 }
@@ -2961,7 +3151,6 @@ async function handleHeist(message, targetUser) {
   const failureImageUrls = [
     "https://media1.tenor.com/m/nw830_b_6LYAAAAd/sad.gif",
     "https://i.imgur.com/iL1MXLu.gif",
-    "https://media.tenor.com/IFQfIfMO01MAAAAM/bolaubee.gif",
   ];
 
   const embed = new EmbedBuilder()
@@ -3644,4 +3833,62 @@ async function performPrestige(userId) {
     console.error(`Error during prestige for user ${userId}:`, error);
     throw error;
   }
+}
+
+const ALL_PASSIVES = [
+  {
+    level: 5,
+    description: "1% chance to nullify losses from gambling games",
+  },
+  {
+    level: 10,
+    description: "1% increased interest rate on bank deposits (Coming Soon)",
+  },
+  {
+    level: 25,
+    description: "Ability to store 25% more in printers (Coming soon)",
+  },
+];
+
+async function getPassives(level) {
+  return ALL_PASSIVES.map((passive) => ({
+    ...passive,
+    unlocked: level >= passive.level,
+  }));
+}
+
+async function calculateLevel(userId) {
+  const items = await UserItems.findAll({
+    where: { user_id: userId },
+    include: ["item"],
+  });
+
+  const itemValue = items.reduce((total, userItem) => {
+    const baseCost = userItem.item.cost * userItem.amount;
+    const upgradeCost = userItem.total_upgrade_cost;
+    return total + baseCost + upgradeCost;
+  }, 0);
+
+  return Math.floor(itemValue / 10000) + 1; // Every 10,000 is 1 level, starting from level 1
+}
+
+const PRESTIGE_BENEFITS = [
+  { level: 1, description: "Coming soon!" },
+  { level: 2, description: "Coming soon!" },
+  { level: 3, description: "Coming soon!" },
+  { level: 4, description: "Coming soon!" },
+  { level: 5, description: "Coming soon!" },
+];
+
+async function hasGamblingPassive(userId) {
+  const level = await calculateLevel(userId);
+  return level >= 5; // Assuming this passive unlocks at level 5
+}
+
+// Add this function to apply the gambling passive
+async function applyGamblingPassive(userId) {
+  if (await hasGamblingPassive(userId)) {
+    return Math.random() < 0.01; // chance to trigger the passive
+  }
+  return false;
 }
