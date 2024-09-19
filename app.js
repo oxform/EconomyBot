@@ -19,6 +19,8 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
   ],
 });
+const { PermissionsBitField } = require("discord.js");
+const fs = require("fs");
 require("dotenv").config();
 
 const bankAccounts = new Collection();
@@ -28,6 +30,251 @@ const hoboCooldowns = new Map();
 const blackjackStats = new Map();
 const dailyTransferLimits = new Map();
 const activeBlackjackPlayers = new Set();
+const wordWagerGames = new Map();
+
+const GAME_DURATION = 10000; // 10 seconds
+const DICTIONARY_PATH = "./dictionary.txt";
+let DICTIONARY;
+
+// Load the dictionary
+fs.readFile(DICTIONARY_PATH, "utf8", (err, data) => {
+  if (err) {
+    console.error("Error loading dictionary:", err);
+    process.exit(1);
+  }
+  DICTIONARY = new Set(
+    data.split("\n").map((word) => word.trim().toUpperCase())
+  );
+  console.log(`Dictionary loaded with ${DICTIONARY.size} words`);
+});
+
+const LETTER_COMBINATIONS = [
+  // 100 two-letter combinations
+  "AB",
+  "AC",
+  "AD",
+  "AE",
+  "AF",
+  "AG",
+  "AH",
+  "AI",
+  "AL",
+  "AM",
+  "AN",
+  "AP",
+  "AR",
+  "AS",
+  "AT",
+  "AU",
+  "AV",
+  "AW",
+  "AX",
+  "AY",
+  "BA",
+  "BE",
+  "BI",
+  "BL",
+  "BO",
+  "BR",
+  "BU",
+  "BY",
+  "CA",
+  "CE",
+  "CH",
+  "CI",
+  "CL",
+  "CO",
+  "CR",
+  "CU",
+  "DA",
+  "DE",
+  "DI",
+  "DO",
+  "DR",
+  "DU",
+  "EA",
+  "EI",
+  "OA",
+  "EC",
+  "ED",
+  "EE",
+  "EF",
+  "EG",
+  "EL",
+  "EM",
+  "EN",
+  "EP",
+  "ER",
+  "ES",
+  "ET",
+  "EU",
+  "EV",
+  "EW",
+  "EX",
+  "EY",
+  "FA",
+  "FE",
+  "FI",
+  "FL",
+  "FO",
+  "FR",
+  "FU",
+  "GA",
+  "GE",
+  "GH",
+  "GI",
+  "GL",
+  "GO",
+  "GR",
+  "GU",
+  "HA",
+  "HE",
+  "HI",
+  "HO",
+  "HU",
+  "IC",
+  "ID",
+  "IF",
+  "IL",
+  "IM",
+  "IN",
+  "IO",
+  "IR",
+  "IS",
+  "IT",
+  "JA",
+  "JE",
+  "JO",
+  "JU",
+  "KE",
+  "KI",
+  "KN",
+  "LA",
+  "LE",
+  "LI",
+  "LO",
+  "LU",
+  "MA",
+  "ME",
+  "MI",
+  "MO",
+  "MU",
+  "MY",
+  "NA",
+  "NE",
+  "NI",
+  "NO",
+  "NU",
+  "OB",
+  "OC",
+  "OD",
+  "OF",
+  "OH",
+  "OI",
+  "OK",
+  "OL",
+  "ON",
+  "OP",
+  "OR",
+  "OS",
+  "OU",
+  "OV",
+  "OW",
+  "OX",
+  "OY",
+  "PA",
+  "PE",
+  "PH",
+  "PI",
+  "PL",
+  "PO",
+  "PR",
+  "PU",
+  "QU",
+  "RA",
+  "RE",
+  "RH",
+  "RI",
+  "RO",
+  "RU",
+  "SA",
+  "SC",
+  "SE",
+  "SH",
+  "SI",
+  "SK",
+  "SL",
+  "SM",
+  "SN",
+  "SO",
+  "SP",
+  "ST",
+  "SU",
+  "SW",
+  "SY",
+  "TA",
+  "TE",
+  "TH",
+  "TI",
+  "TO",
+  "TR",
+  "TU",
+  "TW",
+  "UN",
+  "UP",
+  "UR",
+  "US",
+  "UT",
+  "VA",
+  "VE",
+  "VI",
+  "VO",
+  "WA",
+  "WE",
+  "WH",
+  "WI",
+  "WO",
+  "WR",
+  "XA",
+  "XI",
+  "XY",
+  "YA",
+  "YE",
+  "YO",
+  "YU",
+  "ZA",
+  "ZE",
+  "ZO",
+  "GN",
+  "KH",
+  "RH",
+  // 20 three-letter combinations
+  "STR",
+  "ING",
+  "PRE",
+  "CON",
+  "TRA",
+  "DIS",
+  "EXP",
+  "COM",
+  "SUB",
+  "INT",
+  "PRO",
+  "PER",
+  "RES",
+  "TER",
+  "OUT",
+  "UND",
+  "FOR",
+  "ACC",
+  "REL",
+  "SCH",
+  "SPH",
+  "THR",
+  "GNO",
+  "ICH",
+  "EKE",
+];
 
 const DAILY_TRANSFER_LIMIT = 2500;
 
@@ -1457,6 +1704,186 @@ client.on("messageCreate", async (message) => {
   } else if (commandName === "prestige") {
     await handlePrestige(message);
   }
+  if (message.content.startsWith("!challenge")) {
+    const args = message.content.split(" ");
+    const opponent = message.mentions.users.first();
+    const wager = parseInt(args[2]);
+
+    if (opponent && !isNaN(wager)) {
+      const challengerCombinedId = createCombinedId(
+        message.author.id,
+        message.guild.id
+      );
+      const opponentCombinedId = createCombinedId(
+        opponent.id,
+        message.guild.id
+      );
+
+      // Check if challenger has enough balance
+      const challengerBalance = await getBalance(challengerCombinedId);
+      if (challengerBalance < wager) {
+        return message.reply(
+          `You don't have enough balance to make this wager. Your current balance: 🪙${challengerBalance}`
+        );
+      }
+
+      const challengeEmbed = new EmbedBuilder()
+        .setColor("#0099ff")
+        .setTitle("Word Wager Challenge!")
+        .setDescription(
+          `${message.author} has challenged ${opponent} to a Word Wager game for 🪙${wager}!`
+        )
+        .addFields(
+          {
+            name: "How to Play",
+            value:
+              "You'll be shown some letters, and you need to type a word that contains those letters in order. You cannot use words that have already been played!",
+          },
+          { name: "Wager", value: `🪙${wager}` }
+        );
+
+      const acceptButton = new ButtonBuilder()
+        .setCustomId("accept_challenge")
+        .setLabel("Accept")
+        .setStyle(ButtonStyle.Success);
+
+      const declineButton = new ButtonBuilder()
+        .setCustomId("decline_challenge")
+        .setLabel("Decline")
+        .setStyle(ButtonStyle.Danger);
+
+      const row = new ActionRowBuilder().addComponents(
+        acceptButton,
+        declineButton
+      );
+
+      const challengeMessage = await message.channel.send({
+        embeds: [challengeEmbed],
+        components: [row],
+      });
+
+      const filter = (i) => i.user.id === opponent.id;
+      const collector = challengeMessage.createMessageComponentCollector({
+        filter,
+        time: 30000,
+      });
+
+      collector.on("collect", async (i) => {
+        if (i.customId === "accept_challenge") {
+          // Check if opponent has enough balance
+          const opponentBalance = await getBalance(opponentCombinedId);
+          if (opponentBalance < wager) {
+            await i.update({
+              content: `${opponent}, you don't have enough balance to accept this wager. Your current balance: 🪙${opponentBalance}`,
+              components: [],
+            });
+            return;
+          }
+
+          await i.update({
+            content: "Challenge accepted! Game starting...",
+            components: [],
+          });
+          startWordWagerGame(
+            message.channel,
+            message.author,
+            opponent,
+            wager,
+            challengerCombinedId,
+            opponentCombinedId
+          );
+        } else if (i.customId === "decline_challenge") {
+          await i.update({ content: "Challenge declined.", components: [] });
+        }
+      });
+
+      collector.on("end", (collected) => {
+        if (collected.size === 0) {
+          challengeMessage.edit({
+            content: "Challenge timed out.",
+            components: [],
+          });
+        }
+      });
+    } else {
+      message.reply("Invalid command. Usage: !challenge @User amount");
+    }
+  } else if (commandName === "wipe") {
+    // Check if the user has administrator permissions
+    if (
+      !message.member.permissions.has(PermissionsBitField.Flags.Administrator)
+    ) {
+      return message.reply("You do not have permission to use this command.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor("#FF0000")
+      .setTitle("⚠️ Server Wipe Confirmation ⚠️")
+      .setDescription(
+        "Are you sure you want to wipe all user data for this server? This action cannot be undone!"
+      )
+      .setFooter({
+        text: "This will delete all user balances, inventories, and progress.",
+      });
+
+    const confirmButton = new ButtonBuilder()
+      .setCustomId("confirm_wipe")
+      .setLabel("Confirm Wipe")
+      .setStyle(ButtonStyle.Danger);
+
+    const cancelButton = new ButtonBuilder()
+      .setCustomId("cancel_wipe")
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary);
+
+    const row = new ActionRowBuilder().addComponents(
+      confirmButton,
+      cancelButton
+    );
+
+    const reply = await message.reply({ embeds: [embed], components: [row] });
+
+    const filter = (i) => i.user.id === message.author.id;
+    const collector = reply.createMessageComponentCollector({
+      filter,
+      time: 30000,
+    });
+
+    collector.on("collect", async (i) => {
+      if (i.customId === "confirm_wipe") {
+        await wipeServerData(message.guild.id);
+        const successEmbed = new EmbedBuilder()
+          .setColor("#00FF00")
+          .setTitle("Server Wipe Successful")
+          .setDescription("All user data for this server has been wiped.")
+          .setFooter({ text: "The economy has been reset." });
+
+        await i.update({ embeds: [successEmbed], components: [] });
+      } else if (i.customId === "cancel_wipe") {
+        const cancelEmbed = new EmbedBuilder()
+          .setColor("#0099FF")
+          .setTitle("Server Wipe Cancelled")
+          .setDescription(
+            "The server wipe has been cancelled. No data was deleted."
+          );
+
+        await i.update({ embeds: [cancelEmbed], components: [] });
+      }
+    });
+
+    collector.on("end", (collected) => {
+      if (collected.size === 0) {
+        const timeoutEmbed = new EmbedBuilder()
+          .setColor("#FF0000")
+          .setTitle("Server Wipe Cancelled")
+          .setDescription(
+            "The server wipe request has timed out. No data was deleted."
+          );
+
+        reply.edit({ embeds: [timeoutEmbed], components: [] });
+      }
+    });
+  }
 });
 
 // Add this interaction handler for the Collect Interest button
@@ -1831,7 +2258,7 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 2 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     const results = [
       {
@@ -3838,16 +4265,16 @@ async function performPrestige(userId) {
 const ALL_PASSIVES = [
   {
     level: 5,
-    description: "1% chance to nullify losses from gambling games",
+    description: "1% increased interest rate on bank deposits",
   },
   {
     level: 10,
-    description: "1% increased interest rate on bank deposits (Coming Soon)",
+    description: "1% chance to nullify losses from gambling games",
   },
-  {
-    level: 25,
-    description: "Ability to store 25% more in printers (Coming soon)",
-  },
+  // {
+  //   level: 25,
+  //   description: "Ability to store 25% more in printers (Coming soon)",
+  // },
 ];
 
 async function getPassives(level) {
@@ -3891,4 +4318,267 @@ async function applyGamblingPassive(userId) {
     return Math.random() < 0.01; // chance to trigger the passive
   }
   return false;
+}
+
+const INITIAL_GAME_DURATION = 10000; // 10 seconds
+const TIME_DECREASE_PER_TURN = 500; // 0.5 seconds
+const MIN_GAME_DURATION = 3500;
+const MAX_ATTEMPTS = 3;
+const MIN_WORD_LENGTH = 3;
+
+function getRandomLetters() {
+  return LETTER_COMBINATIONS[
+    Math.floor(Math.random() * LETTER_COMBINATIONS.length)
+  ];
+}
+
+async function startWordWagerGame(
+  channel,
+  player1,
+  player2,
+  wager,
+  player1Id,
+  player2Id
+) {
+  const gameId = `${channel.id}-${Date.now()}`;
+  const gameState = {
+    players: [player1, player2],
+    playerIds: [player1Id, player2Id],
+    lives: [2, 2],
+    currentPlayerIndex: 0,
+    currentLetters: getRandomLetters(),
+    wager: wager,
+    usedWords: new Set(),
+    attempts: 0,
+    currentGameDuration: INITIAL_GAME_DURATION,
+  };
+
+  wordWagerGames.set(gameId, gameState);
+
+  const embed = new EmbedBuilder()
+    .setColor("#0099ff")
+    .setTitle("Word Wager Game Started!")
+    .setDescription(`${gameState.players[0]}, it's your turn.`)
+    .addFields(
+      { name: "Letters", value: gameState.currentLetters, inline: true },
+      { name: "Wager", value: `🪙${wager}`, inline: true },
+      {
+        name: "Time Limit",
+        value: `${gameState.currentGameDuration / 1000} seconds`,
+        inline: true,
+      }
+    )
+    .setFooter({
+      text: `Type a word (min ${MIN_WORD_LENGTH} letters) containing these letters in order.`,
+    });
+
+  await channel.send({ embeds: [embed] });
+  await playWordWagerTurn(channel, gameId);
+}
+async function playWordWagerTurn(channel, gameId) {
+  const gameState = wordWagerGames.get(gameId);
+  const currentPlayer = gameState.players[gameState.currentPlayerIndex];
+
+  const filter = (m) => m.author.id === currentPlayer.id;
+
+  const collector = channel.createMessageCollector({
+    filter,
+    time: gameState.currentGameDuration,
+  });
+
+  collector.on("collect", async (message) => {
+    const response = message.content.trim().toUpperCase();
+
+    if (isValidWord(response, gameState.currentLetters, gameState.usedWords)) {
+      collector.stop("valid");
+      gameState.usedWords.add(response);
+      await channel.send(`Valid word: ${response}! Moving to the next player.`);
+      gameState.currentPlayerIndex = 1 - gameState.currentPlayerIndex;
+      gameState.currentLetters = getRandomLetters();
+      gameState.attempts = 0;
+
+      // Decrease the time limit for the next turn
+      gameState.currentGameDuration = Math.max(
+        gameState.currentGameDuration - TIME_DECREASE_PER_TURN,
+        MIN_GAME_DURATION
+      );
+
+      const embed = new EmbedBuilder()
+        .setColor("#00ff00")
+        .setTitle("Next Turn")
+        .setDescription(
+          `${gameState.players[gameState.currentPlayerIndex]}, it's your turn.`
+        )
+        .addFields(
+          { name: "Letters", value: gameState.currentLetters, inline: true },
+          {
+            name: "Time Limit",
+            value: `${gameState.currentGameDuration / 1000} seconds`,
+            inline: true,
+          },
+          {
+            name: "Attempts",
+            value: `${MAX_ATTEMPTS} attempts before losing a life`,
+            inline: true,
+          }
+        )
+        .setFooter({
+          text: `Type a word (min ${MIN_WORD_LENGTH} letters) containing these letters in order.`,
+        });
+
+      await channel.send({ embeds: [embed] });
+      await playWordWagerTurn(channel, gameId);
+    } else {
+      gameState.attempts++;
+      if (gameState.attempts >= MAX_ATTEMPTS) {
+        collector.stop("max_attempts");
+      } else {
+        let errorMessage = `Invalid word. `;
+        if (response.length < MIN_WORD_LENGTH) {
+          errorMessage += `Words must be at least ${MIN_WORD_LENGTH} letters long. `;
+        } else if (gameState.usedWords.has(response)) {
+          errorMessage += `That word has already been used! `;
+        } else {
+          errorMessage += `You have ${
+            MAX_ATTEMPTS - gameState.attempts
+          } attempts left.`;
+        }
+        await channel.send(errorMessage);
+      }
+    }
+  });
+
+  collector.on("end", async (collected, reason) => {
+    if (reason === "valid") return;
+
+    await channel.send(`Time's up or max attempts reached! You lose a life.`);
+    gameState.lives[gameState.currentPlayerIndex]--;
+    if (gameState.lives[gameState.currentPlayerIndex] === 0) {
+      endWordWagerGame(channel, gameId);
+    } else {
+      gameState.currentPlayerIndex = 1 - gameState.currentPlayerIndex;
+      gameState.currentLetters = getRandomLetters();
+      gameState.attempts = 0;
+
+      const embed = new EmbedBuilder()
+        .setColor("#ff9900")
+        .setTitle("Life Lost - Next Turn")
+        .setDescription(
+          `${gameState.players[gameState.currentPlayerIndex]}, it's your turn.`
+        )
+        .addFields(
+          { name: "Letters", value: gameState.currentLetters, inline: true },
+          {
+            name: "Time Limit",
+            value: `${gameState.currentGameDuration / 1000} seconds`,
+            inline: true,
+          },
+          {
+            name: "Lives",
+            value: `${gameState.players[0]}: ${gameState.lives[0]} | ${gameState.players[1]}: ${gameState.lives[1]}`,
+            inline: true,
+          }
+        )
+        .setFooter({
+          text: `Type a word (min ${MIN_WORD_LENGTH} letters) containing these letters in order.`,
+        });
+
+      await channel.send({ embeds: [embed] });
+      await playWordWagerTurn(channel, gameId);
+    }
+  });
+}
+
+function isValidWord(word, letters, usedWords) {
+  if (word.length < MIN_WORD_LENGTH) return false;
+  if (usedWords.has(word)) return false;
+  if (!DICTIONARY.has(word)) return false;
+
+  let letterIndex = 0;
+  for (let char of word) {
+    if (char === letters[letterIndex]) {
+      letterIndex++;
+      if (letterIndex === letters.length) return true;
+    }
+  }
+  return false;
+}
+
+async function endWordWagerGame(channel, gameId) {
+  const gameState = wordWagerGames.get(gameId);
+  const winnerIndex = gameState.lives[0] > 0 ? 0 : 1;
+  const loserIndex = 1 - winnerIndex;
+  const winner = gameState.players[winnerIndex];
+  const loser = gameState.players[loserIndex];
+
+  // Transfer the wager
+  await addBalance(gameState.playerIds[winnerIndex], gameState.wager);
+  await addBalance(gameState.playerIds[loserIndex], -gameState.wager);
+
+  const winnerNewBalance = await getBalance(gameState.playerIds[winnerIndex]);
+  const loserNewBalance = await getBalance(gameState.playerIds[loserIndex]);
+
+  const endGameEmbed = new EmbedBuilder()
+    .setColor("#00ff00")
+    .setTitle("Word Wager Game Over!")
+    .setDescription(
+      `${winner} wins and gets 🪙${gameState.wager} from ${loser}!`
+    )
+    .addFields(
+      {
+        name: `${winner.username}'s New Balance`,
+        value: `🪙${winnerNewBalance}`,
+        inline: true,
+      },
+      {
+        name: `${loser.username}'s New Balance`,
+        value: `🪙${loserNewBalance}`,
+        inline: true,
+      }
+    )
+    .setFooter({ text: "Thanks for playing Word Wager!" })
+    .setTimestamp();
+
+  await channel.send({ embeds: [endGameEmbed] });
+
+  wordWagerGames.delete(gameId);
+}
+
+async function wipeServerData(guildId) {
+  try {
+    // Delete all user data for the specific guild
+    await Users.destroy({
+      where: {
+        user_id: {
+          [Op.like]: `%-${guildId}`,
+        },
+      },
+    });
+
+    // Delete all user items for the specific guild
+    await UserItems.destroy({
+      where: {
+        user_id: {
+          [Op.like]: `%-${guildId}`,
+        },
+      },
+    });
+
+    // Clear local caches for the specific guild
+    for (const [userId, userData] of bankAccounts.entries()) {
+      if (userId.endsWith(`-${guildId}`)) {
+        bankAccounts.delete(userId);
+        interestCooldowns.delete(userId);
+        coinflipStats.delete(userId);
+        hoboCooldowns.delete(userId);
+        blackjackStats.delete(userId);
+        dailyTransferLimits.delete(userId);
+      }
+    }
+
+    console.log(`Server wipe successful for guild ${guildId}`);
+  } catch (error) {
+    console.error(`Error during server wipe for guild ${guildId}:`, error);
+    throw error;
+  }
 }
