@@ -580,10 +580,15 @@ async function calculateInterest(userId) {
   if (!account) return null;
 
   const fullBalance = await getFullBalance(userId);
+  const userLevel = await calculateLevel(userId);
 
   const now = Date.now();
   const interestPeriodHours = 1;
-  const interestRate = 0.5; // 0.5% per hour
+  let interestRate = 0.5; // Base rate: 0.5% per hour
+
+  if (userLevel >= 10) {
+    interestRate = 1.5;
+  }
 
   let lastInterestTime = interestCooldowns.get(userId) || account.lastInterest;
 
@@ -1988,33 +1993,25 @@ function createCardEmoji(card) {
   return `${card.value}${suitEmojis[card.suit]}`;
 }
 
-function updateWinStreak(userId, results) {
+function updateWinStreak(userId, totalPayout) {
+  const won = totalPayout > 0;
+  const tie = totalPayout === 0;
+
   const userStats = blackjackStats.get(userId) || {
     winStreak: 0,
     multiplier: 1,
   };
 
-  const winCount = results.filter((result) => result.payout > 0).length;
-  const lossCount = results.filter((result) => result.payout < 0).length;
-
-  if (winCount > 0 && lossCount === 0) {
-    // Player won all hands
-    userStats.winStreak += winCount; // Increase streak by number of hands won
-    const multiplierIncrease = 0.05 * winCount; // Increase multiplier by 0.05 for each hand won
-    userStats.multiplier = Math.min(
-      1 + userStats.winStreak * multiplierIncrease,
-      2
-    ); // Cap at 2x
-  } else if (lossCount > 0) {
-    // Player lost at least one hand
+  if (won) {
+    userStats.winStreak++;
+    userStats.multiplier = Math.min(1 + userStats.winStreak * 0.05, 2); // Cap at 2x
+  } else if (!tie) {
     userStats.winStreak = 0;
     userStats.multiplier = 1;
   }
 
   blackjackStats.set(userId, userStats);
-  return userStats;
 }
-
 function createGameEmbed(
   playerHand,
   dealerHand,
@@ -2081,6 +2078,7 @@ async function createFinalEmbed(
   initialBet,
   userId
 ) {
+  activeBlackjackPlayers.delete(userId);
   const allPlayersBusted = results.every((result) => result.busted);
   let dealerHandValue;
   let dealerValueString;
@@ -2258,24 +2256,19 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 2 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 1.8 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
-    const results = [
-      {
-        hand: hands[0],
-        result: "Blackjack",
-        payout: blackjackPayout,
-        doubledDown: false,
-        busted: false,
-      },
-    ];
-
-    const updatedUserStats = updateWinStreak(userId, results);
-
+    updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
-      results,
+      [
+        {
+          hand: hands[0],
+          result: "Blackjack! You win big!",
+          payout: blackjackPayout,
+        },
+      ],
       dealerHand,
-      updatedUserStats,
+      userStats,
       blackjackPayout,
       initialBet,
       userId
@@ -2413,23 +2406,21 @@ async function playBlackjack(message, initialBet) {
     }
 
     await addBalance(userId, Math.floor(totalPayout));
-    const updatedUserStats = updateWinStreak(userId, results);
+    updateWinStreak(userId, totalPayout);
 
     const finalEmbed = await createFinalEmbed(
       results,
       dealerHand,
-      updatedUserStats,
+      userStats,
       totalPayout,
       initialBet,
       userId
     );
-    activeBlackjackPlayers.delete(userId);
 
     await gameMessage.edit({ embeds: [finalEmbed], components: [] });
   });
 }
 
-// Add this to your interaction handler
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -3120,23 +3111,42 @@ async function playSlotsRound(interaction, betAmount) {
     });
   }
 
-  await addBalance(userId, Math.floor(-betAmount));
-
   const result = spinSlots();
   const winnings = calculateWinnings(result, betAmount);
-  await addBalance(userId, Math.floor(winnings));
+
+  let netGain = winnings - betAmount;
+  let passiveTriggered = false;
+
+  if (netGain < 0) {
+    // Check if the gambling passive triggers
+    passiveTriggered = await applyGamblingPassive(userId);
+    if (passiveTriggered) {
+      netGain = 0; // Nullify the loss
+    }
+  }
+
+  await addBalance(userId, Math.floor(netGain));
 
   const newBalance = await getBalance(userId);
 
   const resultString = result.join(" ");
-  const netGain = winnings - betAmount;
 
   const resultEmbed = new EmbedBuilder()
-    .setColor(winnings > 0 ? "#00FF00" : "#FF0000")
-    .setTitle("🎰 Slots Result 🎰")
+    .setColor(
+      netGain > 0 ? "#00FF00" : passiveTriggered ? "#FFFF00" : "#FF0000"
+    )
+    .setTitle(
+      passiveTriggered
+        ? "🎰 Slots Result - Passive Triggered! 🎰"
+        : "🎰 Slots Result 🎰"
+    )
     .setDescription(
       `${resultString}\n\n${
-        winnings > 0 ? "You won!" : "Better luck next time!"
+        netGain > 0
+          ? "You won!"
+          : passiveTriggered
+          ? "Loss prevented!"
+          : "Better luck next time!"
       }`
     )
     .addFields(
@@ -3147,6 +3157,14 @@ async function playSlotsRound(interaction, betAmount) {
     )
     .setFooter({ text: "Azus Bot Slots" })
     .setTimestamp();
+
+  if (passiveTriggered) {
+    resultEmbed.addFields({
+      name: "Passive Ability",
+      value: "Your 1% chance to nullify gambling losses activated!",
+      inline: false,
+    });
+  }
 
   const playAgainButton = new ButtonBuilder()
     .setCustomId(`play_again_${betAmount}`)
@@ -4226,8 +4244,8 @@ async function performPrestige(userId) {
         prestige_tokens: Users.sequelize.literal("prestige_tokens + 1"),
         balance: 0,
         bank_balance: 0,
-        accumulated_interest: 0,
         last_daily: null,
+        accumulated_interest: 0,
         last_crime: null,
         last_rob: null,
         last_work: null,
@@ -4265,11 +4283,11 @@ async function performPrestige(userId) {
 const ALL_PASSIVES = [
   {
     level: 5,
-    description: "1% increased interest rate on bank deposits",
+    description: "1% chance to nullify losses from gambling games",
   },
   {
     level: 10,
-    description: "1% chance to nullify losses from gambling games",
+    description: "Increase interest base rate from 0.5% to 1.5%",
   },
   // {
   //   level: 25,
