@@ -310,7 +310,8 @@ async function handleDaily(message) {
   const user = await Users.findOne({ where: { user_id: combinedId } });
   const now = new Date();
   const cooldownAmount = 16 * 60 * 60 * 1000; // 16 hours in milliseconds
-  const dailyAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
+  const baseAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
+  const dailyAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
 
   if (user.last_daily && now - user.last_daily < cooldownAmount) {
     const timeLeft = (user.last_daily.getTime() + cooldownAmount - now) / 1000;
