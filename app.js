@@ -438,9 +438,15 @@ async function rob(robberId, targetId) {
 
   // Adjust success chance based on wealth difference
   const wealthRatio = robberTotal / targetTotal;
-  const baseSuccessChance = 0.7;
+  const baseSuccessChance = 0.8;
   const adjustedSuccessChance =
     baseSuccessChance * (1 / Math.sqrt(wealthRatio));
+
+  // Increase the minimum success chance
+  adjustedSuccessChance = Math.max(adjustedSuccessChance, 0.5);
+
+  // Cap the maximum success chance
+  adjustedSuccessChance = Math.min(adjustedSuccessChance, 0.95);
 
   if (Math.random() < adjustedSuccessChance) {
     const minAmount = target.wallet * 0.15;
@@ -942,7 +948,8 @@ client.on("messageCreate", async (message) => {
       }, 5000);
       return;
     }
-    const addAmount = Math.floor(Math.random() * (300 - 100 + 1)) + 250;
+    const baseAmount = Math.floor(Math.random() * (300 - 100 + 1)) + 250;
+    const addAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
     await addBalance(combinedId, addAmount);
     const newBalance = await getBalance(combinedId);
     const embed = new EmbedBuilder()
@@ -980,7 +987,8 @@ client.on("messageCreate", async (message) => {
     const successRate = Math.random();
     if (successRate < 0.8) {
       // 80% chance of success
-      const addAmount = Math.floor(Math.random() * 600) + 450; // Higher risk, higher reward
+      const baseAmount = Math.floor(Math.random() * 600) + 450; // Higher risk, higher reward
+      const addAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
       await addBalance(combinedId, addAmount);
       const newBalance = await getBalance(combinedId);
       const embed = new EmbedBuilder()
@@ -1449,8 +1457,8 @@ client.on("messageCreate", async (message) => {
 
     let earnedAmount;
     let description;
-
-    const amountToAdd = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
+    const baseAmount = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
+    const amountToAdd = await applyIncomeBoostPassive(combinedId, baseAmount);
 
     if (totalBalance < 0) {
       const debtCleared = Math.abs(totalBalance * 0.15);
@@ -2256,7 +2264,7 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 1.8 * userStats.multiplier);
+    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
@@ -3696,11 +3704,19 @@ async function handleHeist(message, targetUser) {
         .setDescription(
           "You cut the wrong wire! Alarms are blaring, and security is closing in!"
         )
-        .addFields({
-          name: "😰 Outcome",
-          value:
-            "You barely managed to escape, but the heist was a total bust.",
-        })
+        .addFields(
+          {
+            name: "😰 Outcome",
+            value:
+              "You barely managed to escape, but the heist was a total bust.",
+          },
+          {
+            name: "🔍 Correct Wire",
+            value: `The correct wire was ${
+              wireColors[correctWire - 1]
+            } (Wire ${correctWire})`,
+          }
+        )
         .setImage(
           failureImageUrls[Math.floor(Math.random() * failureImageUrls.length)]
         )
@@ -4289,11 +4305,19 @@ const ALL_PASSIVES = [
     level: 10,
     description: "Increase interest base rate from 0.5% to 1.5%",
   },
-  // {
-  //   level: 25,
-  //   description: "Ability to store 25% more in printers (Coming soon)",
-  // },
+  {
+    level: 15,
+    description: "Increase income from work, crime, and hobo commands by 25%",
+  },
 ];
+
+async function applyIncomeBoostPassive(userId, amount) {
+  const level = await calculateLevel(userId);
+  if (level >= 15) {
+    return Math.floor(amount * 1.25); // 25% increase
+  }
+  return amount;
+}
 
 async function getPassives(level) {
   return ALL_PASSIVES.map((passive) => ({
@@ -4362,7 +4386,7 @@ async function startWordWagerGame(
   const gameState = {
     players: [player1, player2],
     playerIds: [player1Id, player2Id],
-    lives: [2, 2],
+    lives: [1, 1],
     currentPlayerIndex: 0,
     currentLetters: getRandomLetters(),
     wager: wager,
@@ -4433,11 +4457,6 @@ async function playWordWagerTurn(channel, gameId) {
             name: "Time Limit",
             value: `${gameState.currentGameDuration / 1000} seconds`,
             inline: true,
-          },
-          {
-            name: "Attempts",
-            value: `${MAX_ATTEMPTS} attempts before losing a life`,
-            inline: true,
           }
         )
         .setFooter({
@@ -4490,12 +4509,12 @@ async function playWordWagerTurn(channel, gameId) {
             name: "Time Limit",
             value: `${gameState.currentGameDuration / 1000} seconds`,
             inline: true,
-          },
-          {
-            name: "Lives",
-            value: `${gameState.players[0]}: ${gameState.lives[0]} | ${gameState.players[1]}: ${gameState.lives[1]}`,
-            inline: true,
           }
+          // {
+          //   name: "Lives",
+          //   value: `${gameState.players[0]}: ${gameState.lives[0]} | ${gameState.players[1]}: ${gameState.lives[1]}`,
+          //   inline: true,
+          // }
         )
         .setFooter({
           text: `Type a word (min ${MIN_WORD_LENGTH} letters) containing these letters in order.`,
