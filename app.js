@@ -276,7 +276,7 @@ const LETTER_COMBINATIONS = [
   "EKE",
 ];
 
-const DAILY_TRANSFER_LIMIT = 2500;
+const DAILY_TRANSFER_LIMIT = 5000;
 
 function updateHoboCooldown(userId) {
   const now = Date.now();
@@ -434,20 +434,17 @@ async function rob(robberId, targetId) {
   const target = await getFullBalance(targetId);
   const robber = await getFullBalance(robberId);
 
-  const robberTotal = robber.wallet + robber.bank;
-  const targetTotal = target.wallet + target.bank;
+  const robberTotal = Math.max(robber.wallet + robber.bank, 0);
+  const targetTotal = Math.max(target.wallet + target.bank, 0);
 
   // Adjust success chance based on wealth difference
-  const wealthRatio = robberTotal / targetTotal;
-  const baseSuccessChance = 0.8;
-  const adjustedSuccessChance =
-    baseSuccessChance * (1 / Math.sqrt(wealthRatio));
+  const wealthRatio = (targetTotal + 1) / (robberTotal + 1); // Adding 1 to avoid division by zero
+  const baseSuccessChance = 0.75;
+  let adjustedSuccessChance = baseSuccessChance * Math.sqrt(wealthRatio);
 
-  // Increase the minimum success chance
-  adjustedSuccessChance = Math.max(adjustedSuccessChance, 0.5);
-
-  // Cap the maximum success chance
-  adjustedSuccessChance = Math.min(adjustedSuccessChance, 0.95);
+  // Cap the success chance
+  adjustedSuccessChance = Math.max(0.4, Math.min(adjustedSuccessChance, 0.95));
+  console.log("Adjusted success chance:", adjustedSuccessChance);
 
   if (Math.random() < adjustedSuccessChance) {
     const minAmount = target.wallet * 0.15;
@@ -927,7 +924,7 @@ client.on("messageCreate", async (message) => {
     const guildId = message.guild.id;
     const topUsers = await getTopUsers(guildId, true); // Default to net worth
     const embed = createLeaderboardEmbed(topUsers, true, message.guild.name);
-    const row = createLeaderboardButtons(true);
+    const row = createLeaderboardButtons(true, false);
 
     return message.reply({ embeds: [embed], components: [row] });
   } // Updated work command
@@ -1171,6 +1168,7 @@ client.on("messageCreate", async (message) => {
       const printerMoney = await calculatePrinterMoney(printers);
       const netWorth = await calculateNetWorth(targetCombinedId);
       const level = await calculateLevel(targetCombinedId);
+      const prestige = account.prestigeTokens || 0;
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
@@ -1191,14 +1189,23 @@ client.on("messageCreate", async (message) => {
               name: "Total",
               value: `🪙 ${(account.bank + account.wallet).toLocaleString()}`,
               inline: true,
-            },
-            {
-              name: "Interest Rate",
-              value: `${interestInfo.interestRate}% every hour`,
-              inline: true,
             }
           )
           .setFooter({ text: `Net Worth • 🪙${netWorth.toLocaleString()}` });
+
+        if (prestige > 0) {
+          embed.addFields({
+            name: "Prestige Level",
+            value: `🥇 ${prestige}`,
+            inline: false,
+          });
+        }
+
+        embed.addFields({
+          name: "Interest Rate",
+          value: `${interestInfo.interestRate}% every hour`,
+          inline: true,
+        });
 
         if (
           account.accumulatedInterest > 0 ||
@@ -1295,11 +1302,10 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "rob") {
     const target = message.mentions.users.first();
-    const targetCombinedId = createCombinedId(target.id, message.guild.id);
-
     if (!target) {
       return message.reply("You need to mention a user to rob!");
     }
+    const targetCombinedId = createCombinedId(target.id, message.guild.id);
 
     if (targetCombinedId === combinedId) {
       return message.reply("You can't rob yourself!");
@@ -2549,17 +2555,24 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({ embeds: [prestigeEmbed], ephemeral: true });
   } else if (
     interaction.customId === "leaderboard_net_worth" ||
-    interaction.customId === "leaderboard_total_cash"
+    interaction.customId === "leaderboard_total_cash" ||
+    interaction.customId === "leaderboard_prestige"
   ) {
     const showNetWorth = interaction.customId === "leaderboard_net_worth";
+    const showPrestige = interaction.customId === "leaderboard_prestige";
     const guildId = interaction.guild.id;
-    const topUsers = await getTopUsers(guildId, showNetWorth);
+    let topUsers = await getTopUsers(guildId, showNetWorth);
+
+    if (showPrestige) {
+      topUsers = topUsers.sort((a, b) => b.prestigeTokens - a.prestigeTokens);
+    }
+
     const embed = createLeaderboardEmbed(
       topUsers,
       showNetWorth,
       interaction.guild.name
     );
-    const row = createLeaderboardButtons(showNetWorth);
+    const row = createLeaderboardButtons(showNetWorth, showPrestige);
 
     return await interaction.update({ embeds: [embed], components: [row] });
   }
@@ -2915,7 +2928,7 @@ async function getTopUsers(guildId, sortByNetWorth = true) {
   const users = await Users.findAll({
     where: {
       user_id: {
-        [Op.like]: `%-${guildId}`, // Filter users by the current guild
+        [Op.like]: `%-${guildId}`,
       },
     },
   });
@@ -2928,6 +2941,7 @@ async function getTopUsers(guildId, sortByNetWorth = true) {
         userId,
         netWorth,
         totalCash: user.balance + user.bank_balance,
+        prestigeTokens: user.prestige_tokens || 0,
       };
     })
   );
@@ -2947,9 +2961,13 @@ function createLeaderboardEmbed(topUsers, showNetWorth, guildName) {
     )
     .setDescription(
       topUsers
-        .map(({ userId, netWorth, totalCash }, index) => {
+        .map(({ userId, netWorth, totalCash, prestigeTokens }, index) => {
           const value = showNetWorth ? netWorth : totalCash;
-          return `${index + 1}. <@${userId}> - 🪙 ${value.toLocaleString()}`;
+          const prestigeDisplay =
+            prestigeTokens > 0 ? ` 🥇${prestigeTokens}` : "";
+          return `${
+            index + 1
+          }. <@${userId}> - 🪙 ${value.toLocaleString()}${prestigeDisplay}`;
         })
         .join("\n")
     )
@@ -2961,7 +2979,7 @@ function createLeaderboardEmbed(topUsers, showNetWorth, guildName) {
     .setTimestamp();
 }
 
-function createLeaderboardButtons(showNetWorth) {
+function createLeaderboardButtons(showNetWorth, showPrestige) {
   const netWorthButton = new ButtonBuilder()
     .setCustomId("leaderboard_net_worth")
     .setLabel("Net Worth")
@@ -2970,9 +2988,22 @@ function createLeaderboardButtons(showNetWorth) {
   const totalCashButton = new ButtonBuilder()
     .setCustomId("leaderboard_total_cash")
     .setLabel("Balance")
-    .setStyle(showNetWorth ? ButtonStyle.Secondary : ButtonStyle.Primary);
+    .setStyle(
+      !showNetWorth && !showPrestige
+        ? ButtonStyle.Primary
+        : ButtonStyle.Secondary
+    );
 
-  return new ActionRowBuilder().addComponents(netWorthButton, totalCashButton);
+  const prestigeButton = new ButtonBuilder()
+    .setCustomId("leaderboard_prestige")
+    .setLabel("Prestige")
+    .setStyle(showPrestige ? ButtonStyle.Primary : ButtonStyle.Secondary);
+
+  return new ActionRowBuilder().addComponents(
+    netWorthButton,
+    totalCashButton,
+    prestigeButton
+  );
 }
 
 const SLOT_SYMBOLS = [
@@ -4308,7 +4339,8 @@ const ALL_PASSIVES = [
   },
   {
     level: 15,
-    description: "Increase income from work, crime, and hobo commands by 25%",
+    description:
+      "Increase income from work, crime, daily and hobo commands by 25%",
   },
 ];
 
