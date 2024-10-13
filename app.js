@@ -590,7 +590,7 @@ async function calculateInterest(userId) {
   const interestPeriodHours = 1;
   let interestRate = 0.5; // Base rate: 0.5% per hour
 
-  if (userLevel >= 10) {
+  if (userLevel >= 25) {
     interestRate = 1.5;
   }
 
@@ -923,7 +923,12 @@ client.on("messageCreate", async (message) => {
   if (commandName === "leaderboard" || commandName === "lb") {
     const guildId = message.guild.id;
     const topUsers = await getTopUsers(guildId, true); // Default to net worth
-    const embed = createLeaderboardEmbed(topUsers, true, message.guild.name);
+    const embed = createLeaderboardEmbed(
+      topUsers,
+      true,
+      message.guild.name,
+      false
+    );
     const row = createLeaderboardButtons(true, false);
 
     return message.reply({ embeds: [embed], components: [row] });
@@ -2561,7 +2566,7 @@ client.on("interactionCreate", async (interaction) => {
     const showNetWorth = interaction.customId === "leaderboard_net_worth";
     const showPrestige = interaction.customId === "leaderboard_prestige";
     const guildId = interaction.guild.id;
-    let topUsers = await getTopUsers(guildId, showNetWorth);
+    let topUsers = await getTopUsers(guildId, showNetWorth || showPrestige);
 
     if (showPrestige) {
       topUsers = topUsers.sort((a, b) => b.prestigeTokens - a.prestigeTokens);
@@ -2570,7 +2575,8 @@ client.on("interactionCreate", async (interaction) => {
     const embed = createLeaderboardEmbed(
       topUsers,
       showNetWorth,
-      interaction.guild.name
+      interaction.guild.name,
+      showPrestige
     );
     const row = createLeaderboardButtons(showNetWorth, showPrestige);
 
@@ -2795,10 +2801,17 @@ async function calculatePrinterMoney(printers) {
 
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
+    const userLevel = await calculateLevel(printer.user_id);
 
-    const interval = calculateSpeedUpgrade(printer.speed_level);
+    const interval = applyPrinterSpeedPassive(
+      calculateSpeedUpgrade(printer.speed_level),
+      userLevel
+    );
     let outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
-    const capacity = calculateCapacity(baseRate, printer.capacity_level);
+    const capacity = applyPrinterCapacityPassive(
+      calculateCapacity(baseRate, printer.capacity_level),
+      userLevel
+    );
 
     const minutesSinceLastCollection =
       (Date.now() - printer.last_collected) / (1000 * 60);
@@ -2826,13 +2839,20 @@ async function calculatePrinterMoney(printers) {
 async function collectPrinterMoney(userId) {
   const printers = await getUserPrinters(userId);
   let totalGenerated = 0;
+  const userLevel = await calculateLevel(userId);
 
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
 
-    const interval = calculateSpeedUpgrade(printer.speed_level);
+    const interval = applyPrinterSpeedPassive(
+      calculateSpeedUpgrade(printer.speed_level),
+      userLevel
+    );
     const outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
-    const capacity = calculateCapacity(baseRate, printer.capacity_level);
+    const capacity = applyPrinterCapacityPassive(
+      calculateCapacity(baseRate, printer.capacity_level),
+      userLevel
+    );
 
     const minutesSinceLastCollection =
       (Date.now() - printer.last_collected) / (1000 * 60);
@@ -2946,36 +2966,55 @@ async function getTopUsers(guildId, sortByNetWorth = true) {
     })
   );
 
-  return userNetWorths
-    .sort((a, b) =>
-      sortByNetWorth ? b.netWorth - a.netWorth : b.totalCash - a.totalCash
-    )
-    .slice(0, 10);
+  return userNetWorths.sort((a, b) =>
+    sortByNetWorth ? b.netWorth - a.netWorth : b.totalCash - a.totalCash
+  );
 }
 
-function createLeaderboardEmbed(topUsers, showNetWorth, guildName) {
+function createLeaderboardEmbed(
+  topUsers,
+  showNetWorth,
+  guildName,
+  showPrestige
+) {
+  let title, description, footerText;
+
+  if (showPrestige) {
+    title = `${guildName} - Prestige Leaderboard`;
+    description = topUsers
+      .sort((a, b) => b.prestigeTokens - a.prestigeTokens)
+      .slice(0, 10)
+      .map(({ userId, netWorth, prestigeTokens }, index) => {
+        return `${
+          index + 1
+        }. <@${userId}> - 🥇${prestigeTokens} 🪙 ${netWorth.toLocaleString()}`;
+      })
+      .join("\n");
+    footerText = `Top 10 Most Prestigious Users in ${guildName}`;
+  } else {
+    const metric = showNetWorth ? "Net Worth" : "Balance";
+    title = `${guildName} - ${metric} Leaderboard`;
+    description = topUsers
+      .slice(0, 10)
+      .map(({ userId, netWorth, totalCash, prestigeTokens }, index) => {
+        const value = showNetWorth ? netWorth : totalCash;
+        const prestigeDisplay =
+          prestigeTokens > 0 ? ` 🥇${prestigeTokens}` : "";
+        return `${
+          index + 1
+        }. <@${userId}> - 🪙 ${value.toLocaleString()}${prestigeDisplay}`;
+      })
+      .join("\n");
+    footerText = `Top 10 ${
+      showNetWorth ? "Wealthiest" : "Richest"
+    } Users in ${guildName}`;
+  }
+
   return new EmbedBuilder()
     .setColor("#ff00ff")
-    .setTitle(
-      `${guildName} - ${showNetWorth ? "Net Worth" : "Balance"} Leaderboard`
-    )
-    .setDescription(
-      topUsers
-        .map(({ userId, netWorth, totalCash, prestigeTokens }, index) => {
-          const value = showNetWorth ? netWorth : totalCash;
-          const prestigeDisplay =
-            prestigeTokens > 0 ? ` 🥇${prestigeTokens}` : "";
-          return `${
-            index + 1
-          }. <@${userId}> - 🪙 ${value.toLocaleString()}${prestigeDisplay}`;
-        })
-        .join("\n")
-    )
-    .setFooter({
-      text: `Top 10 ${
-        showNetWorth ? "Wealthiest" : "Richest"
-      } Users in ${guildName}`,
-    })
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({ text: footerText })
     .setTimestamp();
 }
 
@@ -3532,7 +3571,9 @@ async function handleHeist(message, targetUser) {
     return message.reply("The target user doesn't have an account.");
   }
 
-  const protectionPeriod = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+  const targetLevel = await calculateLevel(targetUserId);
+  const protectionPeriod =
+    targetLevel >= 250 ? 12 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
   if (
     target.last_heisted &&
     Date.now() - target.last_heisted.getTime() < protectionPeriod
@@ -3828,7 +3869,10 @@ function calculateWires(baseWires, wireReductionLevel) {
 
 // Function to calculate steal percentage based on upgrades
 function calculateStealPercentage(basePercentage, stealIncreaseLevel) {
-  return Math.min(50, basePercentage + stealIncreaseLevel * 5);
+  let percentage =
+    basePercentage + (stealIncreaseLevel * (20 - basePercentage)) / 3;
+  percentage = Math.min(20, percentage);
+  return Math.round(percentage / 2) * 2;
 }
 
 // Function to calculate cooldown based on upgrades
@@ -4331,22 +4375,33 @@ async function performPrestige(userId) {
 const ALL_PASSIVES = [
   {
     level: 5,
-    description: "1% chance to nullify losses from gambling games",
-  },
-  {
-    level: 10,
-    description: "Increase interest base rate from 0.5% to 1.5%",
-  },
-  {
-    level: 15,
     description:
       "Increase income from work, crime, daily and hobo commands by 25%",
   },
+  {
+    level: 10,
+    description: "1% chance to nullify losses from gambling games",
+  },
+  {
+    level: 25,
+    description: "Increase interest base rate from 0.5% to 1.5%",
+  },
+  {
+    level: 50,
+    description: "Printers have 10% more capacity",
+  },
+  {
+    level: 100,
+    description: "Printers produce money 10% quicker",
+  },
+  {
+    level: 250,
+    description: "Heist Protection Shield 8 > 12 hours",
+  },
 ];
-
 async function applyIncomeBoostPassive(userId, amount) {
   const level = await calculateLevel(userId);
-  if (level >= 15) {
+  if (level >= 5) {
     return Math.floor(amount * 1.25); // 25% increase
   }
   return amount;
@@ -4384,7 +4439,7 @@ const PRESTIGE_BENEFITS = [
 
 async function hasGamblingPassive(userId) {
   const level = await calculateLevel(userId);
-  return level >= 5; // Assuming this passive unlocks at level 5
+  return level >= 10; // Assuming this passive unlocks at level 5
 }
 
 // Add this function to apply the gambling passive
@@ -4651,4 +4706,26 @@ async function wipeServerData(guildId) {
     console.error(`Error during server wipe for guild ${guildId}:`, error);
     throw error;
   }
+}
+
+async function applyIncomeBoostPassive(userId, amount) {
+  const level = await calculateLevel(userId);
+  if (level >= 5) {
+    return Math.floor(amount * 1.25); // 25% increase
+  }
+  return amount;
+}
+
+function applyPrinterCapacityPassive(capacity, level) {
+  if (level >= 50) {
+    return Math.floor(capacity * 1.1); // 10% increase
+  }
+  return capacity;
+}
+
+function applyPrinterSpeedPassive(interval, level) {
+  if (level >= 100) {
+    return interval * 0.9; // 10% quicker
+  }
+  return interval;
 }
