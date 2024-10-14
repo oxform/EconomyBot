@@ -9,6 +9,8 @@ const {
   GatewayIntentBits,
   EmbedBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } = require("discord.js");
 const { Users, CurrencyShop, UserItems } = require("./dbObjects.js");
 const client = new Client({
@@ -594,6 +596,10 @@ async function calculateInterest(userId) {
     interestRate = 1.5;
   }
 
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  const interestBoostLevel = prestigeUpgrades.interest_rate || 0;
+  interestRate += 3 * interestBoostLevel; // 1% increase per level
+
   let lastInterestTime = interestCooldowns.get(userId) || account.lastInterest;
 
   if (!lastInterestTime) {
@@ -1174,11 +1180,16 @@ client.on("messageCreate", async (message) => {
       const netWorth = await calculateNetWorth(targetCombinedId);
       const level = await calculateLevel(targetCombinedId);
       const prestige = account.prestigeTokens || 0;
+      const prestigeUpgrades = await getUserPrestigeUpgradesFromId(
+        targetCombinedId
+      );
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
           .setColor("#3498db")
-          .setTitle(`🏦 ${targetMember.displayName}'s Balance • Level ${level}`)
+          .setTitle(
+            `🏦 ${targetMember.displayName}'s Balance • Level ${level} 🥇 ${prestige}`
+          )
           .addFields(
             {
               name: "Wallet",
@@ -1199,11 +1210,25 @@ client.on("messageCreate", async (message) => {
           .setFooter({ text: `Net Worth • 🪙${netWorth.toLocaleString()}` });
 
         if (prestige > 0) {
-          embed.addFields({
-            name: "Prestige Level",
-            value: `🥇 ${prestige}`,
-            inline: false,
-          });
+          const activeUpgrades = Object.entries(prestigeUpgrades).filter(
+            ([_, level]) => level > 0
+          );
+          if (activeUpgrades.length > 0) {
+            const upgradesText = activeUpgrades
+              .map(([id, level]) => {
+                const upgrade = PRESTIGE_SHOP_ITEMS.find(
+                  (item) => item.id === id
+                );
+                const emoji = getUpgradeEmoji(id);
+                return `${emoji} ${upgrade.name}: Level ${level}/${upgrade.maxLevel}`;
+              })
+              .join("\n");
+            embed.addFields({
+              name: "Prestige Upgrades",
+              value: upgradesText,
+              inline: false,
+            });
+          }
         }
 
         embed.addFields({
@@ -1211,17 +1236,6 @@ client.on("messageCreate", async (message) => {
           value: `${interestInfo.interestRate}% every hour`,
           inline: true,
         });
-
-        if (
-          account.accumulatedInterest > 0 ||
-          interestInfo.accumulatedInterest > 0
-        ) {
-          embed.addFields({
-            name: "Collectable Interest",
-            value: `🪙 ${interestInfo.accumulatedInterest.toLocaleString()}`,
-            inline: true,
-          });
-        }
 
         if (printers.length > 0) {
           const orderedPrinterDetails = allPrinters
@@ -1239,7 +1253,7 @@ client.on("messageCreate", async (message) => {
               const interval = `⏱️ ${formatTime(p.interval)}`;
 
               return [
-                `__**${name}**__`,
+                `**${name}**`,
                 `Generated: ${generated}`,
                 `Rate: ${rate}`,
                 `Interval: ${interval}`,
@@ -1254,8 +1268,19 @@ client.on("messageCreate", async (message) => {
             inline: false,
           });
 
+          if (
+            account.accumulatedInterest > 0 ||
+            interestInfo.accumulatedInterest > 0
+          ) {
+            embed.addFields({
+              name: "Collectable Interest Money",
+              value: `🪙 ${interestInfo.accumulatedInterest.toLocaleString()}`,
+              inline: true,
+            });
+          }
+
           embed.addFields({
-            name: "Total Ready to Collect",
+            name: "Collectable Printer Money",
             value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
             inline: false,
           });
@@ -1281,8 +1306,8 @@ client.on("messageCreate", async (message) => {
             .setStyle(ButtonStyle.Secondary);
 
           const viewPrestigeButton = new ButtonBuilder()
-            .setCustomId(`view_prestige_${targetCombinedId}`)
-            .setLabel("View Prestige")
+            .setCustomId(`open_prestige_shop`)
+            .setLabel("View Prestige Shop")
             .setStyle(ButtonStyle.Secondary);
 
           const row = new ActionRowBuilder().addComponents(
@@ -1314,6 +1339,26 @@ client.on("messageCreate", async (message) => {
 
     if (targetCombinedId === combinedId) {
       return message.reply("You can't rob yourself!");
+    }
+
+    const targetNetWorth = await calculateNetWorth(targetCombinedId);
+    const userNetWorth = await calculateNetWorth(combinedId);
+
+    if (targetNetWorth > 5000000 && userNetWorth < 5000000) {
+      const embed = new EmbedBuilder()
+        .setColor("#FFD700")
+        .setTitle("🛡️ Rob Attempt Blocked")
+        .setDescription("This user's wealth is too great to be targeted!")
+        .addFields({
+          name: "Target's Net Worth",
+          value: `Over 🪙5,000,000`,
+          inline: true,
+        })
+        .setFooter({
+          text: "Tip: Try targeting someone with less than 5,000,000 net worth",
+        })
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
     }
 
     const cooldownLeft = await updateRobCooldown(combinedId);
@@ -1682,33 +1727,45 @@ client.on("messageCreate", async (message) => {
     await handleSlotsPayout(message);
   } else if (commandName === "upgrade" && args[0]?.toLowerCase() === "heist") {
     await handleHeistUpgrade(message, args);
-  } else if (commandName === "upgrade") {
-    let printerName = args.join(" ");
-    printerName = args
-      .map((arg) => arg.charAt(0).toUpperCase() + arg.slice(1))
-      .join(" ");
+  } else if (commandName === "upgrade" || commandName === "up") {
+    let printerInput = args.join(" ").toLowerCase();
 
-    if (!printerName) {
+    if (!printerInput) {
       return message.reply("Usage: !upgrade [printer name]");
     }
 
     const user = await Users.findOne({ where: { user_id: combinedId } });
-    const printer = await UserItems.findOne({
+
+    // Get all printers the user owns
+    const userPrinters = await UserItems.findAll({
       where: { user_id: combinedId },
       include: [
         {
           model: CurrencyShop,
           as: "item",
-          where: { name: printerName, type: "printer" },
+          where: { type: "printer" },
         },
       ],
     });
 
-    if (!printer) {
-      return message.reply("You don't own that printer or it doesn't exist.");
+    // Find the printer that matches the input (partial match, accounting for "Printer" at the end)
+    const matchedPrinter = userPrinters.find(
+      (printer) =>
+        printer.item.name.toLowerCase().includes(printerInput) ||
+        printer.item.name
+          .toLowerCase()
+          .replace(" printer", "")
+          .includes(printerInput)
+    );
+
+    if (!matchedPrinter) {
+      const ownedPrinters = userPrinters.map((p) => p.item.name).join(", ");
+      return message.reply(
+        `You don't own a printer that matches "${printerInput}". Your printers: ${ownedPrinters}`
+      );
     }
 
-    const { embed, row } = await createUpgradeEmbed(printer, user);
+    const { embed, row } = await createUpgradeEmbed(matchedPrinter, user);
 
     return message.reply({ embeds: [embed], components: [row] });
   } else if (commandName === "heist") {
@@ -1908,10 +1965,20 @@ client.on("messageCreate", async (message) => {
         reply.edit({ embeds: [timeoutEmbed], components: [] });
       }
     });
+  } else if (
+    commandName === "prestigeshop" ||
+    commandName === "ps" ||
+    commandName === "prestige shop"
+  ) {
+    try {
+      const shopDisplay = await handlePrestigeShop(message);
+      await message.reply(shopDisplay);
+    } catch (error) {
+      console.error("Error displaying prestige shop:", error);
+      await message.reply(`An error occurred: ${error.message}`);
+    }
   }
 });
-
-// Add this interaction handler for the Collect Interest button
 
 const suits = ["♠", "♥", "♦", "♣"];
 const values = [
@@ -2155,25 +2222,27 @@ async function createFinalEmbed(
           ` (${playerValueString})`,
         inline: true,
       },
-      { name: "Result", value: result.result, inline: true },
-      {
+      { name: "Result", value: result.result, inline: true }
+    );
+    if (results.length > 1) {
+      embed.addFields({
         name: "Payout",
         value: `🪙 ${Math.abs(result.payout).toLocaleString()}`,
         inline: true,
-      }
-    );
+      });
+    }
   });
 
   embed
     .addFields(
-      {
-        name: "Initial Bet",
-        value: `🪙 ${initialBet.toLocaleString()}`,
-        inline: true,
-      },
+      // {
+      //   name: "Initial Bet",
+      //   value: `🪙 ${initialBet.toLocaleString()}`,
+      //   inline: true,
+      // },
       {
         name: "Total Payout",
-        value: `🪙 ${Math.abs(totalPayout).toLocaleString()}`,
+        value: `🪙 ${totalPayout.toLocaleString()}`,
         inline: true,
       },
       {
@@ -2243,10 +2312,6 @@ function canSplitHand(card1, card2) {
   return card1.value === card2.value;
 }
 
-function canSplit(card1, card2) {
-  return card1.value === card2.value;
-}
-
 async function playBlackjack(message, initialBet) {
   const userId = createCombinedId(message.author.id, message.guild.id);
 
@@ -2276,7 +2341,10 @@ async function playBlackjack(message, initialBet) {
   // Check for player blackjack
   const initialHandValue = calculateHandValue(hands[0]);
   if (initialHandValue.value === 21) {
-    const blackjackPayout = Math.floor(initialBet * 1.5 * userStats.multiplier);
+    const blackjackPayout = await applyGamblingIncomeBoost(
+      userId,
+      initialBet * 1.5 * userStats.multiplier
+    );
     await addBalance(userId, Math.floor(blackjackPayout));
     updateWinStreak(userId, true);
     const finalEmbed = await createFinalEmbed(
@@ -2409,7 +2477,11 @@ async function playBlackjack(message, initialBet) {
       }
 
       if (payout > 0) {
-        payout = Math.floor(payout * userStats.multiplier);
+        // Apply income boost to winnings
+        payout = await applyGamblingIncomeBoost(
+          userId,
+          payout * userStats.multiplier
+        );
       } else if (payout < 0 && (await applyGamblingPassive(userId))) {
         payout = 0;
         result += " (Loss Prevented)";
@@ -2442,8 +2514,6 @@ async function playBlackjack(message, initialBet) {
 }
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-
   const guildId = interaction.guild.id;
   const userId = interaction.user.id;
   const combinedId = createCombinedId(userId, guildId);
@@ -2792,6 +2862,76 @@ client.on("interactionCreate", async (interaction) => {
 
     // Update the message with the new embed and buttons
     return await interaction.update({ embeds: [embed], components: [row] });
+  } else if (interaction.customId === "open_prestige_shop") {
+    const shopDisplay = await handlePrestigeShop(interaction);
+    await interaction.reply(shopDisplay);
+  }
+  try {
+    if (
+      interaction.isButton() &&
+      interaction.customId === "prestige_upgrades"
+    ) {
+      const userId = createCombinedId(
+        interaction.user.id,
+        interaction.guild.id
+      );
+      const shopItems = await getPrestigeShopItems(userId);
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId("select_prestige_upgrade")
+        .setPlaceholder("Choose an upgrade to purchase")
+        .addOptions(
+          shopItems.map((item) => ({
+            label: item.name,
+            description: `Cost: ${item.cost} token(s) - Level ${item.currentLevel}/${item.maxLevel}`,
+            value: item.id,
+            default: false,
+          }))
+        );
+
+      const row = new ActionRowBuilder().addComponents(select);
+
+      await interaction.reply({
+        content: "Select an upgrade to purchase:",
+        components: [row],
+        ephemeral: true,
+      });
+    }
+
+    if (
+      interaction.isStringSelectMenu() &&
+      interaction.customId === "select_prestige_upgrade"
+    ) {
+      const itemId = interaction.values[0];
+      const userId = createCombinedId(
+        interaction.user.id,
+        interaction.guild.id
+      );
+
+      const result = await purchasePrestigeItem(userId, itemId);
+
+      // Update the interaction with the purchase result
+      await interaction.update({ content: result.message, components: [] });
+
+      // Send a new message with the updated shop display
+      const shopDisplay = await handlePrestigeShop(interaction);
+      await interaction.followUp(shopDisplay);
+    }
+  } catch (error) {
+    console.error("Error in prestige shop interaction:", error);
+
+    // Check if the interaction has already been replied to
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({
+        content: `An error occurred: ${error.message}`,
+        ephemeral: true,
+      });
+    } else {
+      await interaction.reply({
+        content: `An error occurred: ${error.message}`,
+        ephemeral: true,
+      });
+    }
   }
 });
 
@@ -2802,14 +2942,21 @@ async function calculatePrinterMoney(printers) {
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
     const userLevel = await calculateLevel(printer.user_id);
+    const prestigeUpgrades = await getUserPrestigeUpgradesFromId(
+      printer.user_id
+    );
 
     const interval = applyPrinterSpeedPassive(
       calculateSpeedUpgrade(printer.speed_level),
       userLevel
     );
-    let outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
+    let outputBoost = calculateUpgradeEffect(
+      baseRate,
+      printer.output_level,
+      prestigeUpgrades
+    );
     const capacity = applyPrinterCapacityPassive(
-      calculateCapacity(baseRate, printer.capacity_level),
+      calculateCapacity(baseRate, printer.capacity_level, prestigeUpgrades),
       userLevel
     );
 
@@ -2817,7 +2964,13 @@ async function calculatePrinterMoney(printers) {
       (Date.now() - printer.last_collected) / (1000 * 60);
     const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    const generatedAmount = outputBoost * cycles * printer.amount;
+    let generatedAmount = outputBoost * cycles * printer.amount;
+
+    // Apply income boost from prestige upgrade
+    const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
+    const incomeBoost = 1 + 0.05 * incomeBoostLevel; // 5% increase per level
+    generatedAmount *= incomeBoost;
+
     const actualGenerated = Math.min(generatedAmount, capacity);
 
     outputBoost =
@@ -2840,6 +2993,7 @@ async function collectPrinterMoney(userId) {
   const printers = await getUserPrinters(userId);
   let totalGenerated = 0;
   const userLevel = await calculateLevel(userId);
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
 
   for (const printer of printers) {
     const baseRate = getPrinterBaseRate(printer.item.name);
@@ -2848,9 +3002,13 @@ async function collectPrinterMoney(userId) {
       calculateSpeedUpgrade(printer.speed_level),
       userLevel
     );
-    const outputBoost = calculateUpgradeEffect(baseRate, printer.output_level);
+    const outputBoost = calculateUpgradeEffect(
+      baseRate,
+      printer.output_level,
+      prestigeUpgrades
+    );
     const capacity = applyPrinterCapacityPassive(
-      calculateCapacity(baseRate, printer.capacity_level),
+      calculateCapacity(baseRate, printer.capacity_level, prestigeUpgrades),
       userLevel
     );
 
@@ -2858,7 +3016,13 @@ async function collectPrinterMoney(userId) {
       (Date.now() - printer.last_collected) / (1000 * 60);
     const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    const generatedAmount = outputBoost * cycles * printer.amount;
+    let generatedAmount = outputBoost * cycles * printer.amount;
+
+    // Apply income boost from prestige upgrade
+    const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
+    const incomeBoost = 1 + 0.05 * incomeBoostLevel; // 5% increase per level
+    generatedAmount *= incomeBoost;
+
     const actualGenerated = Math.min(generatedAmount, capacity);
 
     totalGenerated += actualGenerated;
@@ -3191,12 +3355,16 @@ async function playSlotsRound(interaction, betAmount) {
   }
 
   const result = spinSlots();
-  const winnings = calculateWinnings(result, betAmount);
+  let winnings = calculateWinnings(result, betAmount);
 
   let netGain = winnings - betAmount;
   let passiveTriggered = false;
 
-  if (netGain < 0) {
+  if (netGain > 0) {
+    // Apply income boost to winnings
+    netGain = await applyGamblingIncomeBoost(userId, netGain);
+    winnings = netGain + betAmount;
+  } else if (netGain < 0) {
     // Check if the gambling passive triggers
     passiveTriggered = await applyGamblingPassive(userId);
     if (passiveTriggered) {
@@ -3263,7 +3431,9 @@ async function playCoinflip(message, userId, bet) {
 
   const win = Math.random() * 100 < userStats.winChance;
   if (win) {
-    await addBalance(userId, Math.floor(bet));
+    const winnings = Math.floor(bet);
+    const boostedWinnings = await applyGamblingIncomeBoost(userId, winnings);
+    await addBalance(userId, boostedWinnings);
     userStats.streak++;
     userStats.winChance = Math.min(userStats.winChance + 1, 75); // Cap at 75%
     coinflipStats.set(userId, userStats);
@@ -3273,7 +3443,7 @@ async function playCoinflip(message, userId, bet) {
     const winEmbed = new EmbedBuilder()
       .setColor("#00ff00")
       .setTitle(`Coinflip: You Won!`)
-      .setDescription(`You won 🪙${bet}`)
+      .setDescription(`You won 🪙${boostedWinnings}`)
       .addFields(
         {
           name: "New Balance",
@@ -3414,10 +3584,15 @@ function getPrinterBaseRate(printerName) {
   return rates[printerName] || 1;
 }
 
-function calculateUpgradeEffect(baseEffect, level) {
+function calculateUpgradeEffect(baseEffect, level, prestigeUpgrades = {}) {
   const increasePerLevel = 0.25; // 25% increase per level
-  if (level === 0) return baseEffect;
-  return baseEffect * Math.pow(1 + increasePerLevel, level);
+  let effect = baseEffect * Math.pow(1 + increasePerLevel, level);
+
+  // Apply prestige printer efficiency upgrade
+  const printerEfficiencyLevel = prestigeUpgrades.printer_efficiency || 0;
+  effect *= 1 + 0.2 * printerEfficiencyLevel; // 15% increase per level
+
+  return effect;
 }
 
 function calculateSpeedUpgrade(level) {
@@ -3428,11 +3603,16 @@ function calculateSpeedUpgrade(level) {
   return baseInterval * (1 - reduction);
 }
 
-function calculateCapacity(baseRate, level) {
+function calculateCapacity(baseRate, level, prestigeUpgrades) {
   const baseCapacity = baseRate * 100;
   const multiplier = 1.5; // Exponential growth multiplier
-  const increase = baseCapacity * Math.pow(multiplier, level); // Exponential increase
-  return Math.floor(increase);
+  let capacity = baseCapacity * Math.pow(multiplier, level); // Exponential increase
+
+  // Apply prestige printer capacity upgrade
+  const printerCapacityLevel = prestigeUpgrades.printer_capacity || 0;
+  capacity *= 1 + 0.3 * printerCapacityLevel; // 25% increase per level
+
+  return Math.floor(capacity);
 }
 
 function formatTime(minutes) {
@@ -3455,7 +3635,7 @@ async function createUpgradeEmbed(printer, user) {
     .setTimestamp();
 
   const row = new ActionRowBuilder();
-
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(user.user_id);
   const upgradeEmojis = {
     speed: "⚡",
     output: "💰",
@@ -3481,11 +3661,24 @@ async function createUpgradeEmbed(printer, user) {
       currentEffect = formatTime(calculateSpeedUpgrade(currentLevel));
       nextEffect = formatTime(calculateSpeedUpgrade(nextLevel));
     } else if (upgrade.upgrade_type === "output") {
-      currentEffect = calculateUpgradeEffect(baseRate, currentLevel).toFixed(1);
-      nextEffect = calculateUpgradeEffect(baseRate, nextLevel).toFixed(1);
+      currentEffect = calculateUpgradeEffect(
+        baseRate,
+        currentLevel,
+        prestigeUpgrades
+      ).toFixed(1);
+      nextEffect = calculateUpgradeEffect(
+        baseRate,
+        nextLevel,
+        prestigeUpgrades
+      ).toFixed(1);
     } else if (upgrade.upgrade_type === "capacity") {
-      currentEffect = calculateCapacity(baseRate, currentLevel);
-      nextEffect = calculateCapacity(baseRate, nextLevel);
+      currentEffect = calculateCapacity(
+        baseRate,
+        currentLevel,
+        prestigeUpgrades,
+        prestigeUpgrades
+      );
+      nextEffect = calculateCapacity(baseRate, nextLevel, prestigeUpgrades);
     }
 
     const emoji = upgradeEmojis[upgrade.upgrade_type];
@@ -3571,9 +3764,37 @@ async function handleHeist(message, targetUser) {
     return message.reply("The target user doesn't have an account.");
   }
 
+  const targetNetWorth = await calculateNetWorth(targetUserId);
+  const userNetWorth = await calculateNetWorth(userId);
+
+  if (targetNetWorth > 5000000 && userNetWorth < 5000000) {
+    const embed = new EmbedBuilder()
+      .setColor("#FFD700")
+      .setTitle("🛡️ Heist Blocked")
+      .setDescription("This user's wealth is too great to be targeted!")
+      .addFields({
+        name: "Target's Net Worth",
+        value: `🪙${targetNetWorth.toLocaleString()}`,
+        inline: true,
+      })
+      .setFooter({
+        text: "Tip: Try targeting someone with less than 5,000,000 net worth",
+      })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
+
   const targetLevel = await calculateLevel(targetUserId);
-  const protectionPeriod =
-    targetLevel >= 250 ? 12 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
+  const targetPrestigeUpgrades = await getUserPrestigeUpgradesFromId(
+    targetUserId
+  );
+
+  const protectionPeriod = calculateHeistProtectionDuration(
+    targetLevel,
+    targetPrestigeUpgrades
+  );
+
   if (
     target.last_heisted &&
     Date.now() - target.last_heisted.getTime() < protectionPeriod
@@ -3586,7 +3807,7 @@ async function handleHeist(message, targetUser) {
       .setColor("#FFD700")
       .setTitle("🛡️ Heist Blocked")
       .setDescription(
-        `Looks like their vault is still on high alert from the last heist attempt.`
+        "Looks like their vault is still on high alert from the last heist attempt."
       )
       .addFields({
         name: "Security Cooldown",
@@ -4330,10 +4551,10 @@ async function handlePrestige(message) {
 
 async function performPrestige(userId) {
   try {
-    // Increment prestige tokens and reset user's progress
     const [updatedRowsCount, updatedRows] = await Users.update(
       {
         prestige_tokens: Users.sequelize.literal("prestige_tokens + 1"),
+        prestige_tokens_used: 0, // Reset used tokens
         balance: 0,
         bank_balance: 0,
         last_daily: null,
@@ -4401,10 +4622,18 @@ const ALL_PASSIVES = [
 ];
 async function applyIncomeBoostPassive(userId, amount) {
   const level = await calculateLevel(userId);
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  let boost = 1;
+
   if (level >= 5) {
-    return Math.floor(amount * 1.25); // 25% increase
+    boost *= 1.25; // 25% increase from level 5 passive
   }
-  return amount;
+
+  // Apply prestige income boost
+  const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
+  boost *= 1 + 0.1 * incomeBoostLevel; // 5% increase per level
+
+  return Math.floor(amount * boost);
 }
 
 async function getPassives(level) {
@@ -4444,10 +4673,19 @@ async function hasGamblingPassive(userId) {
 
 // Add this function to apply the gambling passive
 async function applyGamblingPassive(userId) {
-  if (await hasGamblingPassive(userId)) {
-    return Math.random() < 0.01; // chance to trigger the passive
+  const level = await calculateLevel(userId);
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  let passiveChance = 0;
+
+  if (level >= 10) {
+    passiveChance = 0.01; // 1% chance from level 10 passive
   }
-  return false;
+
+  // Apply prestige gambling passive upgrade
+  const gamblingPassiveLevel = prestigeUpgrades.gambling_passive || 0;
+  passiveChance += 0.01 * gamblingPassiveLevel; // Additional 1% chance per level
+
+  return Math.random() < passiveChance;
 }
 
 const INITIAL_GAME_DURATION = 10000; // 10 seconds
@@ -4708,14 +4946,6 @@ async function wipeServerData(guildId) {
   }
 }
 
-async function applyIncomeBoostPassive(userId, amount) {
-  const level = await calculateLevel(userId);
-  if (level >= 5) {
-    return Math.floor(amount * 1.25); // 25% increase
-  }
-  return amount;
-}
-
 function applyPrinterCapacityPassive(capacity, level) {
   if (level >= 50) {
     return Math.floor(capacity * 1.1); // 10% increase
@@ -4728,4 +4958,214 @@ function applyPrinterSpeedPassive(interval, level) {
     return interval * 0.9; // 10% quicker
   }
   return interval;
+}
+
+const PRESTIGE_SHOP_ITEMS = [
+  {
+    id: "income_boost",
+    name: "Income Boost",
+    description:
+      "Permanently increase all income sources by 10% (including gambling)",
+    cost: 1,
+    maxLevel: 1,
+  },
+  {
+    id: "interest_rate",
+    name: "Interest Rate Boost",
+    description: "Permanently increase interest rate by 3%",
+    cost: 1,
+    maxLevel: 1,
+  },
+  {
+    id: "printer_efficiency",
+    name: "Printer Efficiency",
+    description: "Permanently increase printer output by 20%",
+    cost: 1,
+    maxLevel: 1,
+  },
+  {
+    id: "printer_capacity",
+    name: "Printer Capacity",
+    description: "Permanently increase printer capacity by 30%",
+    cost: 1,
+    maxLevel: 1,
+  },
+  {
+    id: "gambling_passive",
+    name: "Gambling Passive",
+    description: "Gain an additional 1% chance to nullify gambling losses",
+    cost: 1,
+    maxLevel: 1,
+  },
+  {
+    id: "heist_protection",
+    name: "Heist Protection",
+    description: "Gain an additional 8 hours on your heist protection shield",
+    cost: 1,
+    maxLevel: 1,
+  },
+];
+
+function calculateHeistProtectionDuration(targetLevel, prestigeUpgrades) {
+  let protectionPeriod =
+    targetLevel >= 250 ? 12 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
+
+  // Apply prestige heist protection upgrade
+  const heistProtectionLevel = prestigeUpgrades.heist_protection || 0;
+  protectionPeriod += 8 * 60 * 60 * 1000 * heistProtectionLevel; // Additional 4 hours per level
+
+  return protectionPeriod;
+}
+
+async function getUserPrestigeUpgradesFromId(userId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  if (!user) throw new Error("User not found");
+  let userUpgrades = user.prestige_upgrades;
+  if (typeof userUpgrades === "string") {
+    try {
+      userUpgrades = JSON.parse(userUpgrades);
+    } catch (e) {
+      console.error("Error parsing prestige_upgrades:", e);
+      userUpgrades = {};
+    }
+  }
+  return userUpgrades;
+}
+
+// Function to get prestige shop items with user's current levels
+async function getPrestigeShopItems(userId) {
+  const userUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  const user = await Users.findOne({ where: { user_id: userId } });
+
+  return PRESTIGE_SHOP_ITEMS.map((item) => {
+    const currentLevel = userUpgrades[item.id] || 0;
+    console.log("user upgrades", userUpgrades);
+    console.log("item", item);
+    const isMaxLevel = currentLevel >= item.maxLevel;
+    let statusDisplay;
+
+    if (isMaxLevel) {
+      statusDisplay = `✨ MAX LEVEL (${currentLevel}/${item.maxLevel}) ✨`;
+    } else if (user.prestige_tokens > user.prestige_tokens_used) {
+      statusDisplay = `✅ Available (${currentLevel}/${item.maxLevel})`;
+    } else {
+      statusDisplay = `❌ Unavailable (${currentLevel}/${item.maxLevel})`;
+    }
+
+    return {
+      ...item,
+      currentLevel,
+      canPurchase:
+        !isMaxLevel && user.prestige_tokens > user.prestige_tokens_used,
+      statusDisplay,
+    };
+  });
+}
+
+async function purchasePrestigeItem(userId, itemId) {
+  const user = await Users.findOne({ where: { user_id: userId } });
+  if (!user) throw new Error("User not found");
+
+  const item = PRESTIGE_SHOP_ITEMS.find((i) => i.id === itemId);
+  if (!item) throw new Error("Item not found");
+
+  let userUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  if (typeof userUpgrades === "string") {
+    try {
+      userUpgrades = JSON.parse(userUpgrades);
+    } catch (e) {
+      console.error("Error parsing prestige_upgrades:", e);
+      userUpgrades = {};
+    }
+  }
+
+  const currentLevel = userUpgrades[itemId] || 0;
+
+  if (currentLevel >= item.maxLevel) {
+    throw new Error("Item is already at max level");
+  }
+
+  if (user.prestige_tokens - user.prestige_tokens_used < item.cost) {
+    throw new Error("Not enough unused prestige tokens");
+  }
+
+  // Update user's upgrades and tokens
+  userUpgrades[itemId] = currentLevel + 1;
+  await Users.update(
+    {
+      prestige_upgrades: JSON.stringify(userUpgrades),
+      prestige_tokens_used: user.prestige_tokens_used + item.cost,
+    },
+    { where: { user_id: userId } }
+  );
+
+  return {
+    message: `Successfully purchased ${item.name}`,
+    newLevel: currentLevel + 1,
+  };
+}
+
+async function handlePrestigeShop(context) {
+  const isInteraction = context.isButton || context.isStringSelectMenu;
+  const userId = createCombinedId(
+    isInteraction ? context.user.id : context.author.id,
+    isInteraction ? context.guild.id : context.guild.id
+  );
+
+  const user = await Users.findOne({ where: { user_id: userId } });
+
+  if (!user) {
+    throw new Error("User not found. Please try again.");
+  }
+
+  const shopItems = await getPrestigeShopItems(userId);
+
+  const embed = new EmbedBuilder()
+    .setColor("#800080")
+    .setTitle("🌟 Prestige Shop")
+    .setDescription("Spend your prestige tokens on permanent upgrades!")
+    .addFields(
+      {
+        name: "Available Tokens",
+        value: `${user.prestige_tokens - user.prestige_tokens_used}`,
+        inline: true,
+      },
+      { name: "Total Tokens", value: `${user.prestige_tokens}`, inline: true }
+    );
+
+  shopItems.forEach((item) => {
+    embed.addFields({
+      name: `${item.name} (Level ${item.currentLevel}/${item.maxLevel})`,
+      value: `${item.description}\n\`\`\`${item.statusDisplay}\`\`\``,
+    });
+  });
+
+  const viewButton = new ButtonBuilder()
+    .setCustomId("prestige_upgrades")
+    .setLabel("View/Buy Upgrades")
+    .setStyle(ButtonStyle.Primary);
+
+  const row = new ActionRowBuilder().addComponents(viewButton);
+
+  return { embeds: [embed], components: [row] };
+}
+
+function getUpgradeEmoji(upgradeId) {
+  const emojiMap = {
+    income_boost: "💰",
+    interest_rate: "📈",
+    printer_efficiency: "⚡",
+    printer_capacity: "📦",
+    gambling_passive: "🎲",
+    heist_protection: "🛡️",
+  };
+  return emojiMap[upgradeId] || "🌟";
+}
+
+async function applyGamblingIncomeBoost(userId, amount) {
+  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
+  const boost = 1 + 0.1 * incomeBoostLevel; // 5% increase per level
+
+  return Math.floor(amount * boost);
 }
