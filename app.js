@@ -832,17 +832,50 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   }
   if (commandName === "buy") {
-    const itemName = args.join(" ");
+    const itemInput = args.join(" ").toLowerCase();
     const user = await getFullBalance(combinedId);
-    if (!itemName) {
-      return message.reply("Please specify an item to buy.");
+    if (!itemInput) {
+      return message.reply("Please specify a printer to buy.");
     }
 
-    const item = await CurrencyShop.findOne({
-      where: { name: { [Op.like]: itemName } },
+    // Find all printer items that match the input (partial match)
+    const matchingItems = await CurrencyShop.findAll({
+      where: {
+        name: {
+          [Op.like]: `%${itemInput}%`,
+        },
+        type: "printer", // Assuming printers have a type field set to "printer"
+      },
     });
-    if (!item) {
-      return message.reply("That item doesn't exist.");
+
+    const item = matchingItems[0];
+
+    // Check if the user already owns this type of printer
+    const existingPrinter = await UserItems.findOne({
+      where: { user_id: combinedId, item_id: item.id },
+    });
+
+    if (existingPrinter) {
+      return message.reply(
+        `You already own a ${item.name}. You can only have one of each type of printer.`
+      );
+    }
+
+    if (matchingItems.length === 0) {
+      const allPrinters = await CurrencyShop.findAll({
+        where: { type: "printer" },
+      });
+      const printerList = allPrinters.map((item) => item.name).join(", ");
+      return message.reply(
+        `No printers match "${itemInput}". Available printers: ${printerList}`
+      );
+    }
+
+    if (matchingItems.length > 1) {
+      const printerNames = matchingItems.map((item) => item.name).join(", ");
+      return message.reply(
+        `Multiple printers match "${itemInput}": ${printerNames}. Please be more specific.`
+      );
     }
 
     const totalBalance = user.wallet + user.bank;
@@ -852,22 +885,6 @@ client.on("messageCreate", async (message) => {
           item.name
         } costs 🪙${item.cost.toLocaleString()}!`
       );
-    }
-
-    // Check if the item is a printer
-    const isPrinter = allPrinters.includes(item.name);
-
-    if (isPrinter) {
-      // Check if the user already owns this type of printer
-      const existingPrinter = await UserItems.findOne({
-        where: { user_id: combinedId, item_id: item.id },
-      });
-
-      if (existingPrinter) {
-        return message.reply(
-          `You already own a ${item.name}. You can only have one of each type of printer.`
-        );
-      }
     }
 
     // Deduct the cost from balance first, then bank if needed
@@ -884,19 +901,11 @@ client.on("messageCreate", async (message) => {
       await addBankBalance(combinedId, -remainingCost);
     }
 
-    const userItem = await UserItems.findOne({
-      where: { user_id: combinedId, item_id: item.id },
+    await UserItems.create({
+      user_id: combinedId,
+      item_id: item.id,
+      amount: 1,
     });
-
-    if (userItem) {
-      await userItem.increment("amount");
-    } else {
-      await UserItems.create({
-        user_id: combinedId,
-        item_id: item.id,
-        amount: 1,
-      });
-    }
 
     const newBalance = await getFullBalance(combinedId);
 
@@ -933,9 +942,9 @@ client.on("messageCreate", async (message) => {
       topUsers,
       true,
       message.guild.name,
-      false
+      true
     );
-    const row = createLeaderboardButtons(true, false);
+    const row = createLeaderboardButtons(false, true);
 
     return message.reply({ embeds: [embed], components: [row] });
   } // Updated work command
@@ -3144,7 +3153,7 @@ function createLeaderboardEmbed(
   let title, description, footerText;
 
   if (showPrestige) {
-    title = `${guildName} - Prestige Leaderboard`;
+    title = `${guildName} - Prestige Net Worth Leaderboard`;
     description = topUsers
       .sort((a, b) => b.prestigeTokens - a.prestigeTokens)
       .slice(0, 10)
@@ -3199,13 +3208,13 @@ function createLeaderboardButtons(showNetWorth, showPrestige) {
 
   const prestigeButton = new ButtonBuilder()
     .setCustomId("leaderboard_prestige")
-    .setLabel("Prestige")
+    .setLabel("Prestige Net Worth")
     .setStyle(showPrestige ? ButtonStyle.Primary : ButtonStyle.Secondary);
 
   return new ActionRowBuilder().addComponents(
-    netWorthButton,
+    prestigeButton,
     totalCashButton,
-    prestigeButton
+    netWorthButton
   );
 }
 

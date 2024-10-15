@@ -26,6 +26,22 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 0,
         allowNull: false,
       },
+      prestige_tokens_used: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        allowNull: false,
+      },
+      prestige_upgrades: {
+        type: DataTypes.TEXT,
+        defaultValue: "{}",
+        allowNull: false,
+        get() {
+          return JSON.parse(this.getDataValue("prestige_upgrades"));
+        },
+        set(value) {
+          this.setDataValue("prestige_upgrades", JSON.stringify(value));
+        },
+      },
       last_daily: {
         type: DataTypes.DATE,
         allowNull: true,
