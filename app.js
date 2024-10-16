@@ -598,7 +598,7 @@ async function calculateInterest(userId) {
 
   const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
   const interestBoostLevel = prestigeUpgrades.interest_rate || 0;
-  interestRate += 3 * interestBoostLevel; // 1% increase per level
+  interestRate += 5 * interestBoostLevel; // 1% increase per level
 
   let lastInterestTime = interestCooldowns.get(userId) || account.lastInterest;
 
@@ -1192,6 +1192,7 @@ client.on("messageCreate", async (message) => {
       const prestigeUpgrades = await getUserPrestigeUpgradesFromId(
         targetCombinedId
       );
+      const passives = await getPassives(level, prestigeUpgrades); // Pass prestigeUpgrades her
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
@@ -1218,54 +1219,77 @@ client.on("messageCreate", async (message) => {
           )
           .setFooter({ text: `Net Worth • 🪙${netWorth.toLocaleString()}` });
 
-        if (prestige > 0) {
-          const activeUpgrades = Object.entries(prestigeUpgrades).filter(
-            ([_, level]) => level > 0
-          );
-          if (activeUpgrades.length > 0) {
-            const upgradesText = activeUpgrades
-              .map(([id, level]) => {
-                const upgrade = PRESTIGE_SHOP_ITEMS.find(
-                  (item) => item.id === id
-                );
-                const emoji = getUpgradeEmoji(id);
-                return `${emoji} ${upgrade.name}: Level ${level}/${upgrade.maxLevel}`;
-              })
-              .join("\n");
-            embed.addFields({
-              name: "Prestige Upgrades",
-              value: upgradesText,
-              inline: false,
-            });
-          }
+        // if (prestige > 0) {
+        //   const activeUpgrades = Object.entries(prestigeUpgrades).filter(
+        //     ([_, level]) => level > 0
+        //   );
+        //   if (activeUpgrades.length > 0) {
+        //     const upgradesText = activeUpgrades
+        //       .map(([id, level]) => {
+        //         const upgrade = PRESTIGE_SHOP_ITEMS.find(
+        //           (item) => item.id === id
+        //         );
+        //         const emoji = getUpgradeEmoji(id);
+        //         return `${emoji} ${upgrade.name}: Level ${level}/${upgrade.maxLevel}`;
+        //       })
+        //       .join("\n");
+        //     embed.addFields({
+        //       name: "Prestige Upgrades",
+        //       value: upgradesText,
+        //       inline: false,
+        //     });
+        //   }
+        // }
+
+        // Add Passive Bonuses section
+        const unlockedPassives = passives.filter((p) => p.unlocked);
+        if (unlockedPassives.length > 0) {
+          const passivesText = unlockedPassives
+            .map((p) => {
+              if (p.isPrestige) {
+                return `• ${p.description}`; // Emoji is already included in the description
+              } else {
+                return `• Level ${p.level}: ${p.description}`;
+              }
+            })
+            .join("\n");
+
+          embed.addFields({
+            name: "Active Passive Bonuses",
+            value: passivesText || "No passive bonuses unlocked yet.",
+            inline: false,
+          });
         }
 
-        embed.addFields({
-          name: "Interest Rate",
-          value: `${interestInfo.interestRate}% every hour`,
-          inline: true,
-        });
+        if (printerMoney.printerDetails.length > 0) {
+          const printerInfo = printerMoney.printerDetails
+            .map((printer) => {
+              const icon = getPrinterIcon(printer.name);
+              const name = `${icon} ${printer.name}`;
 
-        if (printers.length > 0) {
-          const orderedPrinterDetails = allPrinters
-            .map((printerName) =>
-              printerMoney.printerDetails.find((p) => p.name === printerName)
-            )
-            .filter(Boolean);
-
-          const printerInfo = orderedPrinterDetails
-            .map((p) => {
-              const icon = getPrinterIcon(p.name);
-              const name = `${icon} ${p.name}`;
-              const generated = `🪙 ${p.generated.toLocaleString()} / ${p.capacity.toLocaleString()}`;
-              const rate = `💰 ${p.outputPerCycle.toLocaleString()}/cycle`;
-              const interval = `⏱️ ${formatTime(p.interval)}`;
+              // Helper function to format boost display
+              const formatBoost = (value, boost) => {
+                return boost > 0 ? `${value} (+${boost}%)` : value;
+              };
 
               return [
                 `**${name}**`,
-                `Generated: ${generated}`,
-                `Rate: ${rate}`,
-                `Interval: ${interval}`,
+                `Generated: 🪙 ${printer.generated.toLocaleString()} / ${formatBoost(
+                  printer.capacity.toLocaleString(),
+                  printer.capacityBoost
+                )}`,
+                `Rate: 💰 ${formatBoost(
+                  printer.outputPerCycle.toLocaleString() + "/cycle",
+                  printer.outputBoost
+                )}`,
+                // `Capacity: ${formatBoost(
+                //   printer.capacity.toLocaleString(),
+                //   printer.capacityBoost
+                // )}`,
+                `Interval: ${formatBoost(
+                  formatTime(printer.interval),
+                  printer.speedBoost
+                )} speed`,
                 "", // Add an empty line for spacing between printers
               ].join("\n");
             })
@@ -1275,6 +1299,12 @@ client.on("messageCreate", async (message) => {
             name: "Money Printers",
             value: printerInfo || "No printers available",
             inline: false,
+          });
+
+          embed.addFields({
+            name: "Collectable Printer Money",
+            value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
+            inline: true,
           });
 
           if (
@@ -1289,11 +1319,12 @@ client.on("messageCreate", async (message) => {
           }
 
           embed.addFields({
-            name: "Collectable Printer Money",
-            value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
-            inline: false,
+            name: "Interest Rate",
+            value: `${interestInfo.interestRate}% every hour`,
+            inline: true,
           });
         }
+
         const isOwnAccount = targetCombinedId === combinedId;
 
         if (isOwnAccount) {
@@ -1734,7 +1765,10 @@ client.on("messageCreate", async (message) => {
     }
   } else if (commandName === "slotspayout") {
     await handleSlotsPayout(message);
-  } else if (commandName === "upgrade" && args[0]?.toLowerCase() === "heist") {
+  } else if (
+    (commandName === "upgrade" || commandName === "up") &&
+    args[0]?.toLowerCase() === "heist"
+  ) {
     await handleHeistUpgrade(message, args);
   } else if (commandName === "upgrade" || commandName === "up") {
     let printerInput = args.join(" ").toLowerCase();
@@ -2530,7 +2564,12 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.customId.startsWith("view_passives_")) {
     const targetCombinedId = interaction.customId.split("_")[2];
     const level = await calculateLevel(targetCombinedId);
-    const passives = await getPassives(level);
+    const prestigeUpgrades = await getUserPrestigeUpgradesFromId(
+      targetCombinedId
+    );
+    const passives = await getPassives(level, prestigeUpgrades).then((x) =>
+      x.filter((x) => !x.isPrestige)
+    );
 
     const unlockedPassives = passives.filter((p) => p.unlocked);
     const lockedPassives = passives.filter((p) => !p.unlocked);
@@ -2668,15 +2707,26 @@ client.on("interactionCreate", async (interaction) => {
   }
   if (interaction.customId === "collect_printers") {
     try {
-      const userId = combinedId;
-      const collectedAmount = await collectPrinterMoney(userId);
-      const newBalance = await getBalance(userId);
+      const collectedAmount = await collectPrinterMoney(combinedId);
+      const newBalance = await getBalance(combinedId);
+      const updatedPrinterMoney = await calculatePrinterMoney(
+        await getUserPrinters(combinedId)
+      );
 
-      const embed = new EmbedBuilder()
+      // Update the original balance embed
+      const balanceEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+
+      // Update relevant fields in the balance embed
+      updateBalanceEmbedFields(balanceEmbed, newBalance, updatedPrinterMoney);
+
+      // Create a new embed for the collection notification
+      const collectionEmbed = new EmbedBuilder()
         .setColor("#00ff00")
         .setTitle("Printer Money Collected!")
         .setDescription(
-          `You've collected 🪙 ${collectedAmount} from your printers.`
+          `${
+            interaction.user
+          } collected 🪙 ${collectedAmount.toLocaleString()} from their printers.`
         )
         .addFields({
           name: "New Balance",
@@ -2686,70 +2736,99 @@ client.on("interactionCreate", async (interaction) => {
         .setFooter({ text: "Azus Bot" })
         .setTimestamp();
 
-      return await interaction.update({ embeds: [embed], components: [] });
+      // Update the buttons
+      const row = ActionRowBuilder.from(interaction.message.components[0]);
+      const collectPrintersButton = row.components.find(
+        (c) => c.data.custom_id === "collect_printers"
+      );
+      if (collectPrintersButton) {
+        collectPrintersButton.setDisabled(updatedPrinterMoney.totalReady <= 0);
+      }
+
+      // Update the original message with the updated balance embed
+      await interaction.update({ embeds: [balanceEmbed], components: [row] });
+
+      // Send the collection notification as a new message
+      await interaction.followUp({ embeds: [collectionEmbed] });
     } catch (error) {
       console.error("Error collecting printer money:", error);
-      return await interaction.reply({
+      await interaction.reply({
         content:
           "An error occurred while collecting printer money. Please try again later.",
-        ephemeral: true,
       });
     }
   }
 
   if (interaction.customId === "collect_interest") {
     try {
-      const userId = combinedId;
-      const account = bankAccounts.get(userId);
-      const getBalance = await getFullBalance(userId);
-      const collectedInterest = getBalance.accumulatedInterest;
+      const account = await getFullBalance(combinedId);
+      const interestInfo = await calculateInterest(combinedId);
+      const collectedInterest = interestInfo.accumulatedInterest;
 
-      if (collectedInterest) {
-        // Add interest to wallet
-        await addBalance(userId, Math.floor(collectedInterest));
-
-        // Update database
+      if (collectedInterest > 0) {
+        await addBalance(combinedId, Math.floor(collectedInterest));
         await Users.update(
-          {
-            accumulated_interest: 0,
-          },
-          { where: { user_id: userId } }
+          { accumulated_interest: 0 },
+          { where: { user_id: combinedId } }
         );
 
-        const embed = new EmbedBuilder()
+        const newBalance = await getBalance(combinedId);
+
+        // Update the original balance embed
+        const balanceEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+
+        // Update relevant fields in the balance embed
+        updateBalanceEmbedFields(balanceEmbed, newBalance);
+
+        // Remove the collectable interest field
+        const interestFieldIndex = balanceEmbed.data.fields.findIndex(
+          (field) => field.name === "Collectable Interest Money"
+        );
+        if (interestFieldIndex !== -1) {
+          balanceEmbed.data.fields.splice(interestFieldIndex, 1);
+        }
+
+        // Create a new embed for the collection notification
+        const collectionEmbed = new EmbedBuilder()
           .setColor("#00ff00")
           .setTitle("Interest Collected!")
           .setDescription(
-            `You've collected 🪙 ${collectedInterest} in interest.`
+            `${
+              interaction.user
+            } collected 🪙 ${collectedInterest.toLocaleString()} in interest.`
           )
-          .addFields(
-            {
-              name: "New Bank Balance",
-              value: `🪙 ${account.balance}`,
-              inline: true,
-            }
-            // {
-            //   name: "Next Interest Available",
-            //   value: "in 1 hour",
-            //   inline: true,
-            // }
-          )
+          .addFields({
+            name: "New Balance",
+            value: `🪙 ${newBalance.toLocaleString()}`,
+            inline: true,
+          })
           .setFooter({ text: "Azus Bot" })
           .setTimestamp();
 
-        return await interaction.update({ embeds: [embed], components: [] });
+        // Update the buttons
+        const row = ActionRowBuilder.from(interaction.message.components[0]);
+        const collectInterestButton = row.components.find(
+          (c) => c.data.custom_id === "collect_interest"
+        );
+        if (collectInterestButton) {
+          collectInterestButton.setDisabled(true);
+        }
+
+        // Update the original message with the updated balance embed
+        await interaction.update({ embeds: [balanceEmbed], components: [row] });
+
+        // Send the collection notification as a new message
+        await interaction.followUp({ embeds: [collectionEmbed] });
       } else {
-        return await interaction.reply({
+        await interaction.reply({
           content: "No interest available to collect right now.",
-          ephemeral: true,
         });
       }
     } catch (error) {
       console.error("Error collecting interest:", error);
-      return await interaction.reply({
+      await interaction.reply({
         content:
           "An error occurred while collecting interest. Please try again later.",
-        ephemeral: true,
       });
     }
   }
@@ -2955,17 +3034,28 @@ async function calculatePrinterMoney(printers) {
       printer.user_id
     );
 
+    // Calculate interval without passive boost
+    const intervalWithoutPassive = calculateSpeedUpgrade(printer.speed_level);
     const interval = applyPrinterSpeedPassive(
-      calculateSpeedUpgrade(printer.speed_level),
+      intervalWithoutPassive,
       userLevel
     );
-    let outputBoost = calculateUpgradeEffect(
+
+    // Calculate output without any prestige boosts
+    let outputPerCycle = calculateUpgradeEffect(
       baseRate,
       printer.output_level,
+      {} // Empty object to exclude prestige upgrades
+    );
+
+    // Calculate capacity without passive boost
+    const capacityWithoutPassive = calculateCapacity(
+      baseRate,
+      printer.capacity_level,
       prestigeUpgrades
     );
     const capacity = applyPrinterCapacityPassive(
-      calculateCapacity(baseRate, printer.capacity_level, prestigeUpgrades),
+      capacityWithoutPassive,
       userLevel
     );
 
@@ -2973,27 +3063,42 @@ async function calculatePrinterMoney(printers) {
       (Date.now() - printer.last_collected) / (1000 * 60);
     const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    let generatedAmount = outputBoost * cycles * printer.amount;
-
-    // Apply income boost from prestige upgrade
+    // Apply prestige upgrades to output
     const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
-    const incomeBoost = 1 + 0.05 * incomeBoostLevel; // 5% increase per level
-    generatedAmount *= incomeBoost;
+    const printerEfficiencyLevel = prestigeUpgrades.printer_efficiency || 0;
+    const incomeBoost = 1 + 0.1 * incomeBoostLevel; // 10% increase per level
+    const efficiencyBoost = 1 + 0.2 * printerEfficiencyLevel; // 20% increase per level
+    const boostedOutputPerCycle =
+      outputPerCycle * incomeBoost * efficiencyBoost;
+
+    let generatedAmount = boostedOutputPerCycle * cycles * printer.amount;
 
     const actualGenerated = Math.min(generatedAmount, capacity);
 
-    outputBoost =
-      outputBoost % 1 !== 0 ? outputBoost.toFixed(1) : outputBoost.toFixed(0);
+    // Calculate boosts
+    const outputBoost = Math.round(
+      (boostedOutputPerCycle / outputPerCycle - 1) * 100
+    );
+    const capacityBoost = Math.round(
+      (capacity / capacityWithoutPassive - 1) * 100
+    );
+    const speedBoost = Math.round(
+      (intervalWithoutPassive / interval - 1) * 100
+    );
 
-    totalReady += actualGenerated;
     printerDetails.push({
       name: printer.item.name,
       generated: Math.floor(actualGenerated),
       capacity: capacity,
       interval: interval,
-      outputPerCycle: outputBoost,
+      outputPerCycle: boostedOutputPerCycle.toFixed(1),
+      outputBoost: outputBoost.toFixed(1),
+      capacityBoost: capacityBoost,
+      speedBoost: speedBoost,
       amount: printer.amount,
     });
+
+    totalReady += actualGenerated;
   }
 
   return { totalReady, printerDetails };
@@ -3011,11 +3116,14 @@ async function collectPrinterMoney(userId) {
       calculateSpeedUpgrade(printer.speed_level),
       userLevel
     );
-    const outputBoost = calculateUpgradeEffect(
+
+    // Calculate output without prestige boosts
+    let outputPerCycle = calculateUpgradeEffect(
       baseRate,
       printer.output_level,
-      prestigeUpgrades
+      {} // Empty object to exclude prestige upgrades
     );
+
     const capacity = applyPrinterCapacityPassive(
       calculateCapacity(baseRate, printer.capacity_level, prestigeUpgrades),
       userLevel
@@ -3025,12 +3133,15 @@ async function collectPrinterMoney(userId) {
       (Date.now() - printer.last_collected) / (1000 * 60);
     const cycles = Math.floor(minutesSinceLastCollection / interval);
 
-    let generatedAmount = outputBoost * cycles * printer.amount;
-
-    // Apply income boost from prestige upgrade
+    // Apply prestige upgrades to output
     const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
-    const incomeBoost = 1 + 0.05 * incomeBoostLevel; // 5% increase per level
-    generatedAmount *= incomeBoost;
+    const printerEfficiencyLevel = prestigeUpgrades.printer_efficiency || 0;
+    const incomeBoost = 1 + 0.1 * incomeBoostLevel; // 10% increase per level
+    const efficiencyBoost = 1 + 0.2 * printerEfficiencyLevel; // 20% increase per level
+    const boostedOutputPerCycle =
+      outputPerCycle * incomeBoost * efficiencyBoost;
+
+    let generatedAmount = boostedOutputPerCycle * cycles * printer.amount;
 
     const actualGenerated = Math.min(generatedAmount, capacity);
 
@@ -3619,7 +3730,7 @@ function calculateCapacity(baseRate, level, prestigeUpgrades) {
 
   // Apply prestige printer capacity upgrade
   const printerCapacityLevel = prestigeUpgrades.printer_capacity || 0;
-  capacity *= 1 + 0.3 * printerCapacityLevel; // 25% increase per level
+  capacity *= 1 + 0.5 * printerCapacityLevel; // 25% increase per level
 
   return Math.floor(capacity);
 }
@@ -4563,7 +4674,6 @@ async function performPrestige(userId) {
     const [updatedRowsCount, updatedRows] = await Users.update(
       {
         prestige_tokens: Users.sequelize.literal("prestige_tokens + 1"),
-        prestige_tokens_used: 0, // Reset used tokens
         balance: 0,
         bank_balance: 0,
         last_daily: null,
@@ -4645,13 +4755,74 @@ async function applyIncomeBoostPassive(userId, amount) {
   return Math.floor(amount * boost);
 }
 
-async function getPassives(level) {
-  return ALL_PASSIVES.map((passive) => ({
+async function getPassives(level, prestigeUpgrades) {
+  let passives = ALL_PASSIVES.map((passive) => ({
     ...passive,
     unlocked: level >= passive.level,
+    isPrestige: false,
   }));
-}
 
+  // Define all prestige upgrades
+  const allPrestigeUpgrades = [
+    {
+      id: "income_boost",
+      emoji: "💰",
+      description: "Increase all income sources by 10%",
+    },
+    {
+      id: "interest_rate",
+      emoji: "📈",
+      description: "Increase interest rate by 5%",
+    },
+    {
+      id: "printer_efficiency",
+      emoji: "⚡",
+      description: "Increase printer output by 20%",
+    },
+    {
+      id: "printer_capacity",
+      emoji: "📦",
+      description: "Increase printer capacity by 50%",
+    },
+    {
+      id: "gambling_passive",
+      emoji: "🎲",
+      description: "additional chance to nullify gambling losses",
+    },
+    {
+      id: "heist_protection",
+      emoji: "🛡️",
+      description: "additional hours of heist protection",
+    },
+  ];
+
+  // Add all prestige upgrades to passives
+  allPrestigeUpgrades.forEach((upgrade) => {
+    const level = prestigeUpgrades[upgrade.id] || 0;
+    let description = upgrade.description;
+
+    if (upgrade.id === "gambling_passive") {
+      description = `${level}% ${description}`;
+    } else if (upgrade.id === "heist_protection") {
+      description = `${level * 8} ${description}`;
+    }
+
+    passives.push({
+      level: 0,
+      description: `${upgrade.emoji} ${description}`,
+      unlocked: level > 0,
+      isPrestige: true,
+    });
+  });
+
+  // ensure prestige is at top of list, then sort by level
+  return passives.sort((a, b) => {
+    if (a.isPrestige === b.isPrestige) {
+      return b.level + a.level;
+    }
+    return a.isPrestige ? -1 : 1;
+  });
+}
 async function calculateLevel(userId) {
   const items = await UserItems.findAll({
     where: { user_id: userId },
@@ -4981,7 +5152,7 @@ const PRESTIGE_SHOP_ITEMS = [
   {
     id: "interest_rate",
     name: "Interest Rate Boost",
-    description: "Permanently increase interest rate by 3%",
+    description: "Permanently increase interest rate by 5%",
     cost: 1,
     maxLevel: 1,
   },
@@ -4995,7 +5166,7 @@ const PRESTIGE_SHOP_ITEMS = [
   {
     id: "printer_capacity",
     name: "Printer Capacity",
-    description: "Permanently increase printer capacity by 30%",
+    description: "Permanently increase printer capacity by 50%",
     cost: 1,
     maxLevel: 1,
   },
@@ -5177,4 +5348,86 @@ async function applyGamblingIncomeBoost(userId, amount) {
   const boost = 1 + 0.1 * incomeBoostLevel; // 5% increase per level
 
   return Math.floor(amount * boost);
+}
+
+function updateBalanceEmbedFields(
+  embed,
+  newBalance,
+  updatedPrinterMoney = null
+) {
+  // Update the wallet balance
+  const walletField = embed.data.fields.find(
+    (field) => field.name === "Wallet"
+  );
+  if (walletField) {
+    walletField.value = `🪙 ${newBalance.toLocaleString()}`;
+  }
+
+  // Update the total balance
+  const totalField = embed.data.fields.find((field) => field.name === "Total");
+  if (totalField) {
+    const bankBalance =
+      embed.data.fields
+        .find((field) => field.name === "Bank")
+        ?.value.replace(/[^0-9]/g, "") || 0;
+    totalField.value = `🪙 ${(
+      newBalance + parseInt(bankBalance)
+    ).toLocaleString()}`;
+  }
+
+  // Update printer information if provided
+  if (updatedPrinterMoney) {
+    const printerField = embed.data.fields.find(
+      (field) => field.name === "Money Printers"
+    );
+    if (printerField && updatedPrinterMoney.printerDetails.length > 0) {
+      printerField.value = formatPrinterInfo(
+        updatedPrinterMoney.printerDetails
+      );
+    }
+
+    // Update collectable printer money
+    const collectableField = embed.data.fields.find(
+      (field) => field.name === "Collectable Printer Money"
+    );
+    if (collectableField) {
+      collectableField.value = `🪙 ${Math.floor(
+        updatedPrinterMoney.totalReady
+      )}`;
+    }
+  }
+}
+
+function formatPrinterInfo(printerDetails) {
+  return printerDetails
+    .map((printer) => {
+      const icon = getPrinterIcon(printer.name);
+      const name = `${icon} ${printer.name}`;
+
+      const formatBoost = (value, boost) => {
+        return boost > 0 ? `${value} (+${boost}%)` : value;
+      };
+
+      return [
+        `**${name}**`,
+        `Generated: 🪙 ${printer.generated.toLocaleString()} / ${formatBoost(
+          printer.capacity.toLocaleString(),
+          printer.capacityBoost
+        )}`,
+        `Rate: 💰 ${formatBoost(
+          printer.outputPerCycle.toLocaleString() + "/cycle",
+          printer.outputBoost
+        )}`,
+        // `Capacity: ${formatBoost(
+        //   printer.capacity.toLocaleString(),
+        //   printer.capacityBoost
+        // )}`,
+        `Interval: ${formatBoost(
+          formatTime(printer.interval),
+          printer.speedBoost
+        )} speed`,
+        "", // Add an empty line for spacing between printers
+      ].join("\n");
+    })
+    .join("\n");
 }
