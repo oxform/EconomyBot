@@ -24,9 +24,9 @@ const client = new Client({
 const { PermissionsBitField } = require("discord.js");
 const fs = require("fs");
 require("dotenv").config();
+const { LETTER_COMBINATIONS } = require("./utils.js");
 
 const bankAccounts = new Collection();
-const interestCooldowns = new Collection();
 const coinflipStats = new Map();
 const hoboCooldowns = new Map();
 const blackjackStats = new Map();
@@ -50,233 +50,11 @@ fs.readFile(DICTIONARY_PATH, "utf8", (err, data) => {
   console.log(`Dictionary loaded with ${DICTIONARY.size} words`);
 });
 
-const LETTER_COMBINATIONS = [
-  // 100 two-letter combinations
-  "AB",
-  "AC",
-  "AD",
-  "AE",
-  "AF",
-  "AG",
-  "AH",
-  "AI",
-  "AL",
-  "AM",
-  "AN",
-  "AP",
-  "AR",
-  "AS",
-  "AT",
-  "AU",
-  "AV",
-  "AW",
-  "AX",
-  "AY",
-  "BA",
-  "BE",
-  "BI",
-  "BL",
-  "BO",
-  "BR",
-  "BU",
-  "BY",
-  "CA",
-  "CE",
-  "CH",
-  "CI",
-  "CL",
-  "CO",
-  "CR",
-  "CU",
-  "DA",
-  "DE",
-  "DI",
-  "DO",
-  "DR",
-  "DU",
-  "EA",
-  "EI",
-  "OA",
-  "EC",
-  "ED",
-  "EE",
-  "EF",
-  "EG",
-  "EL",
-  "EM",
-  "EN",
-  "EP",
-  "ER",
-  "ES",
-  "ET",
-  "EU",
-  "EV",
-  "EW",
-  "EX",
-  "EY",
-  "FA",
-  "FE",
-  "FI",
-  "FL",
-  "FO",
-  "FR",
-  "FU",
-  "GA",
-  "GE",
-  "GH",
-  "GI",
-  "GL",
-  "GO",
-  "GR",
-  "GU",
-  "HA",
-  "HE",
-  "HI",
-  "HO",
-  "HU",
-  "IC",
-  "ID",
-  "IF",
-  "IL",
-  "IM",
-  "IN",
-  "IO",
-  "IR",
-  "IS",
-  "IT",
-  "JA",
-  "JE",
-  "JO",
-  "JU",
-  "KE",
-  "KI",
-  "KN",
-  "LA",
-  "LE",
-  "LI",
-  "LO",
-  "LU",
-  "MA",
-  "ME",
-  "MI",
-  "MO",
-  "MU",
-  "MY",
-  "NA",
-  "NE",
-  "NI",
-  "NO",
-  "NU",
-  "OB",
-  "OC",
-  "OD",
-  "OF",
-  "OH",
-  "OI",
-  "OK",
-  "OL",
-  "ON",
-  "OP",
-  "OR",
-  "OS",
-  "OU",
-  "OV",
-  "OW",
-  "OX",
-  "OY",
-  "PA",
-  "PE",
-  "PH",
-  "PI",
-  "PL",
-  "PO",
-  "PR",
-  "PU",
-  "QU",
-  "RA",
-  "RE",
-  "RH",
-  "RI",
-  "RO",
-  "RU",
-  "SA",
-  "SC",
-  "SE",
-  "SH",
-  "SI",
-  "SK",
-  "SL",
-  "SM",
-  "SN",
-  "SO",
-  "SP",
-  "ST",
-  "SU",
-  "SW",
-  "SY",
-  "TA",
-  "TE",
-  "TH",
-  "TI",
-  "TO",
-  "TR",
-  "TU",
-  "TW",
-  "UN",
-  "UP",
-  "UR",
-  "US",
-  "UT",
-  "VA",
-  "VE",
-  "VI",
-  "VO",
-  "WA",
-  "WE",
-  "WH",
-  "WI",
-  "WO",
-  "WR",
-  "XA",
-  "XI",
-  "XY",
-  "YA",
-  "YE",
-  "YO",
-  "YU",
-  "ZA",
-  "ZE",
-  "ZO",
-  "GN",
-  "KH",
-  "RH",
-  // 20 three-letter combinations
-  "STR",
-  "ING",
-  "PRE",
-  "CON",
-  "TRA",
-  "DIS",
-  "EXP",
-  "COM",
-  "SUB",
-  "INT",
-  "PRO",
-  "PER",
-  "RES",
-  "TER",
-  "OUT",
-  "UND",
-  "FOR",
-  "ACC",
-  "REL",
-  "SCH",
-  "SPH",
-  "THR",
-  "GNO",
-  "ICH",
-  "EKE",
-];
+// Constants for the game
+const TICK_RATE = 500; // 1 second between each tick
+
+// Store active games
+const activeGames = new Map();
 
 const DAILY_TRANSFER_LIMIT = 5000;
 
@@ -598,14 +376,10 @@ async function calculateInterest(userId) {
 
   const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
   const interestBoostLevel = prestigeUpgrades.interest_rate || 0;
-  interestRate += 5 * interestBoostLevel; // 1% increase per level
+  interestRate += 5 * interestBoostLevel; // 5% increase per level
 
-  let lastInterestTime = interestCooldowns.get(userId) || account.lastInterest;
-
-  if (!lastInterestTime) {
-    lastInterestTime = timeStarted;
-    interestCooldowns.set(userId, lastInterestTime);
-  }
+  const user = await Users.findOne({ where: { user_id: userId } });
+  let lastInterestTime = user.last_interest_collected || timeStarted;
 
   const hoursPassed = (now - lastInterestTime) / (1000 * 60 * 60);
   const periodsPassed = Math.floor(hoursPassed / interestPeriodHours);
@@ -617,11 +391,6 @@ async function calculateInterest(userId) {
     newInterest = Math.floor(
       (account.bank_balance || 0) * (interestRate / 100) * periodsPassed
     );
-
-    // Update last interest time
-    lastInterestTime =
-      now - (hoursPassed % interestPeriodHours) * 60 * 60 * 1000;
-    interestCooldowns.set(userId, lastInterestTime);
 
     totalAccumulatedInterest += newInterest;
 
@@ -1192,7 +961,7 @@ client.on("messageCreate", async (message) => {
       const prestigeUpgrades = await getUserPrestigeUpgradesFromId(
         targetCombinedId
       );
-      const passives = await getPassives(level, prestigeUpgrades); // Pass prestigeUpgrades her
+      const passives = await getPassives(level, prestigeUpgrades);
 
       if (account && interestInfo) {
         const embed = new EmbedBuilder()
@@ -1215,39 +984,34 @@ client.on("messageCreate", async (message) => {
               name: "Total",
               value: `🪙 ${(account.bank + account.wallet).toLocaleString()}`,
               inline: true,
+            },
+            {
+              name: "Interest Rate",
+              value: `${interestInfo.interestRate}% every hour`,
+              inline: true,
+            },
+            {
+              name: "Next Interest",
+              value: `${interestInfo.minutesRemaining} minutes`,
+              inline: true,
+            },
+            {
+              name: "\u200b",
+              value: "\u200b",
+              inline: true,
             }
           )
           .setFooter({ text: `Net Worth • 🪙${netWorth.toLocaleString()}` });
 
-        // if (prestige > 0) {
-        //   const activeUpgrades = Object.entries(prestigeUpgrades).filter(
-        //     ([_, level]) => level > 0
-        //   );
-        //   if (activeUpgrades.length > 0) {
-        //     const upgradesText = activeUpgrades
-        //       .map(([id, level]) => {
-        //         const upgrade = PRESTIGE_SHOP_ITEMS.find(
-        //           (item) => item.id === id
-        //         );
-        //         const emoji = getUpgradeEmoji(id);
-        //         return `${emoji} ${upgrade.name}: Level ${level}/${upgrade.maxLevel}`;
-        //       })
-        //       .join("\n");
-        //     embed.addFields({
-        //       name: "Prestige Upgrades",
-        //       value: upgradesText,
-        //       inline: false,
-        //     });
-        //   }
-        // }
-
         // Add Passive Bonuses section
-        const unlockedPassives = passives.filter((p) => p.unlocked);
+        const unlockedPassives = passives.filter(
+          (p) => p.unlocked && p.isPrestige
+        );
         if (unlockedPassives.length > 0) {
           const passivesText = unlockedPassives
             .map((p) => {
               if (p.isPrestige) {
-                return `• ${p.description}`; // Emoji is already included in the description
+                return `${p.description}`;
               } else {
                 return `• Level ${p.level}: ${p.description}`;
               }
@@ -1255,74 +1019,85 @@ client.on("messageCreate", async (message) => {
             .join("\n");
 
           embed.addFields({
-            name: "Active Passive Bonuses",
+            name: "Prestige Bonuses",
             value: passivesText || "No passive bonuses unlocked yet.",
             inline: false,
           });
         }
 
         if (printerMoney.printerDetails.length > 0) {
-          const printerInfo = printerMoney.printerDetails
-            .map((printer) => {
-              const icon = getPrinterIcon(printer.name);
-              const name = `${icon} ${printer.name}`;
+          const printerInfo = printerMoney.printerDetails.map((printer) => {
+            const icon = getPrinterIcon(printer.name);
+            const name = `${icon} ${printer.name}`;
 
-              // Helper function to format boost display
-              const formatBoost = (value, boost) => {
-                return boost > 0 ? `${value} (+${boost}%)` : value;
-              };
+            const formatBoost = (value, boost) => {
+              return boost > 0 ? `${value} (+${boost}%)` : value;
+            };
 
-              return [
-                `**${name}**`,
-                `Generated: 🪙 ${printer.generated.toLocaleString()} / ${formatBoost(
-                  printer.capacity.toLocaleString(),
-                  printer.capacityBoost
-                )}`,
-                `Rate: 💰 ${formatBoost(
-                  printer.outputPerCycle.toLocaleString() + "/cycle",
-                  printer.outputBoost
-                )}`,
-                // `Capacity: ${formatBoost(
-                //   printer.capacity.toLocaleString(),
-                //   printer.capacityBoost
-                // )}`,
-                `Interval: ${formatBoost(
-                  formatTime(printer.interval),
-                  printer.speedBoost
-                )} speed`,
-                "", // Add an empty line for spacing between printers
-              ].join("\n");
-            })
-            .join("\n");
-
-          embed.addFields({
-            name: "Money Printers",
-            value: printerInfo || "No printers available",
-            inline: false,
+            return [
+              `**${name}**`,
+              `Generated: 🪙 ${printer.generated.toLocaleString()} / ${formatBoost(
+                printer.capacity.toLocaleString(),
+                printer.capacityBoost
+              )}`,
+              `Rate: 💰 ${formatBoost(
+                printer.outputPerCycle.toLocaleString() + "/cycle",
+                printer.outputBoost
+              )}`,
+              `Interval: ⏳ ${formatBoost(
+                formatTime(printer.interval),
+                printer.speedBoost
+              )}`,
+              "",
+            ].join("\n");
           });
 
-          embed.addFields({
-            name: "Collectable Printer Money",
-            value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
-            inline: true,
+          // Alternate the printerInfo array between two columns
+          const firstColumn = [];
+          const secondColumn = [];
+
+          // Sort printer info based on all printers
+          const sortedPrinterInfo = [];
+          allPrinters.forEach((printerName) => {
+            const printer = printerInfo.find((p) => p.includes(printerName));
+            if (printer) {
+              sortedPrinterInfo.push(printer);
+            }
           });
 
-          if (
-            account.accumulatedInterest > 0 ||
-            interestInfo.accumulatedInterest > 0
-          ) {
-            embed.addFields({
+          sortedPrinterInfo.forEach((info, index) => {
+            if (index % 2 === 0) {
+              firstColumn.push(info);
+            } else {
+              secondColumn.push(info);
+            }
+          });
+
+          embed.addFields(
+            {
+              name: "Money Printers",
+              value: firstColumn.join("\n") || "No printers available",
+              inline: true,
+            },
+            {
+              name: "\u200b",
+              value: secondColumn.join("\n") || "\u200b",
+              inline: true,
+            }
+          );
+
+          embed.addFields(
+            {
+              name: "Collectable Printer Money",
+              value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
+              inline: false,
+            },
+            {
               name: "Collectable Interest Money",
               value: `🪙 ${interestInfo.accumulatedInterest.toLocaleString()}`,
-              inline: true,
-            });
-          }
-
-          embed.addFields({
-            name: "Interest Rate",
-            value: `${interestInfo.interestRate}% every hour`,
-            inline: true,
-          });
+              inline: false,
+            }
+          );
         }
 
         const isOwnAccount = targetCombinedId === combinedId;
@@ -1357,9 +1132,13 @@ client.on("messageCreate", async (message) => {
             viewPrestigeButton
           );
 
-          message.reply({ embeds: [embed], components: [row] });
+          message.reply({
+            embeds: [embed],
+            components: [row],
+            ephemeral: true,
+          });
         } else {
-          message.reply({ embeds: [embed] });
+          message.reply({ embeds: [embed], ephemeral: true });
         }
       } else {
         message.reply(
@@ -2020,6 +1799,43 @@ client.on("messageCreate", async (message) => {
       console.error("Error displaying prestige shop:", error);
       await message.reply(`An error occurred: ${error.message}`);
     }
+  } else if (commandName === "rocketlaunch" || commandName === "rl") {
+    const balance = await getBalance(combinedId);
+    let betAmount;
+
+    if (args[0]?.toLowerCase() === "all") {
+      betAmount = balance;
+    } else {
+      betAmount = parseInt(args[0]);
+    }
+
+    if (isNaN(betAmount) || betAmount < MIN_BET) {
+      return message.reply(
+        `Please specify a valid bet amount (minimum 🪙${MIN_BET}).`
+      );
+    }
+
+    const userId = createCombinedId(message.author.id, message.guild.id);
+    const userBalance = await getBalance(userId);
+
+    if (userBalance < betAmount) {
+      return message.reply(
+        `You don't have enough coins. Your balance: 🪙${userBalance}`
+      );
+    }
+
+    // Deduct the bet amount from the user's balance
+    await addBalance(combinedId, -betAmount);
+
+    // Start the game using the new startRocketLaunch function
+    const gameMessage = await startRocketLaunch(combinedId, betAmount, message);
+
+    // Get the game object and set the message
+    const game = activeGames.get(combinedId);
+    game.message = gameMessage;
+
+    // Start running the game
+    runRocketLaunch(combinedId);
   }
 });
 
@@ -2700,6 +2516,33 @@ client.on("interactionCreate", async (interaction) => {
 
     return await interaction.update({ embeds: [embed], components: [row] });
   }
+  if (interaction.customId === "cashout") {
+    const userId = createCombinedId(interaction.user.id, interaction.guild.id);
+    const game = activeGames.get(userId);
+
+    if (!game || game.crashed || game.cashed_out) {
+      return interaction.reply({
+        content: "No active game or the game has already ended!",
+        ephemeral: true,
+      });
+    }
+
+    game.cashed_out = true;
+    const totalPayout = Math.floor(game.betAmount * game.multiplier);
+    const profit = totalPayout - game.betAmount;
+    await addBalance(userId, totalPayout);
+
+    const embed = createRocketLaunchEmbed(game, true);
+    const buttons = createRocketLaunchButtons(true);
+    await game.message.edit({ embeds: [embed], components: [buttons] });
+    activeGames.delete(userId);
+
+    await interaction.reply(
+      `Congratulations! You cashed out and won 🪙${profit} in profit! The rocket would have crashed at ${game.crashPoint.toFixed(
+        2
+      )}x.`
+    );
+  }
 
   if (interaction.customId.startsWith("heist_upgrade_")) {
     const upgradeType = interaction.customId.split("_")[2];
@@ -2768,7 +2611,10 @@ client.on("interactionCreate", async (interaction) => {
       if (collectedInterest > 0) {
         await addBalance(combinedId, Math.floor(collectedInterest));
         await Users.update(
-          { accumulated_interest: 0 },
+          {
+            accumulated_interest: 0,
+            last_interest_collected: new Date(),
+          },
           { where: { user_id: combinedId } }
         );
 
@@ -2778,7 +2624,7 @@ client.on("interactionCreate", async (interaction) => {
         const balanceEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
 
         // Update relevant fields in the balance embed
-        updateBalanceEmbedFields(balanceEmbed, newBalance);
+        ww(balanceEmbed, newBalance);
 
         // Remove the collectable interest field
         const interestFieldIndex = balanceEmbed.data.fields.findIndex(
@@ -2822,6 +2668,7 @@ client.on("interactionCreate", async (interaction) => {
       } else {
         await interaction.reply({
           content: "No interest available to collect right now.",
+          ephemeral: true,
         });
       }
     } catch (error) {
@@ -2829,6 +2676,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({
         content:
           "An error occurred while collecting interest. Please try again later.",
+        ephemeral: true,
       });
     }
   }
@@ -4699,7 +4547,6 @@ async function performPrestige(userId) {
 
     // Clear local caches
     bankAccounts.delete(userId);
-    interestCooldowns.delete(userId);
     coinflipStats.delete(userId);
     hoboCooldowns.delete(userId);
     blackjackStats.delete(userId);
@@ -5111,7 +4958,6 @@ async function wipeServerData(guildId) {
     for (const [userId, userData] of bankAccounts.entries()) {
       if (userId.endsWith(`-${guildId}`)) {
         bankAccounts.delete(userId);
-        interestCooldowns.delete(userId);
         coinflipStats.delete(userId);
         hoboCooldowns.delete(userId);
         blackjackStats.delete(userId);
@@ -5376,14 +5222,24 @@ function updateBalanceEmbedFields(
   }
 
   // Update printer information if provided
-  if (updatedPrinterMoney) {
-    const printerField = embed.data.fields.find(
-      (field) => field.name === "Money Printers"
+  if (updatedPrinterMoney && updatedPrinterMoney.printerDetails.length > 0) {
+    const printerFields = embed.data.fields.filter(
+      (field) => field.name === "Money Printers" || field.name === "\u200b"
     );
-    if (printerField && updatedPrinterMoney.printerDetails.length > 0) {
-      printerField.value = formatPrinterInfo(
+
+    if (printerFields.length === 2) {
+      const formattedPrinterInfo = formatPrinterInfo(
         updatedPrinterMoney.printerDetails
       );
+      const printerInfoLines = formattedPrinterInfo.split("\n");
+
+      // Split the printer info into two columns
+      const midPoint = Math.ceil(printerInfoLines.length / 2);
+      const firstColumnInfo = printerInfoLines.slice(0, midPoint).join("\n");
+      const secondColumnInfo = printerInfoLines.slice(midPoint).join("\n");
+
+      printerFields[0].value = firstColumnInfo || "No printers available";
+      printerFields[1].value = secondColumnInfo || "\u200b";
     }
 
     // Update collectable printer money
@@ -5418,16 +5274,127 @@ function formatPrinterInfo(printerDetails) {
           printer.outputPerCycle.toLocaleString() + "/cycle",
           printer.outputBoost
         )}`,
-        // `Capacity: ${formatBoost(
-        //   printer.capacity.toLocaleString(),
-        //   printer.capacityBoost
-        // )}`,
-        `Interval: ${formatBoost(
+        `Interval: ⏳ ${formatBoost(
           formatTime(printer.interval),
           printer.speedBoost
-        )} speed`,
+        )}`,
         "", // Add an empty line for spacing between printers
       ].join("\n");
     })
     .join("\n");
+}
+
+function createRocketLaunchEmbed(game, isCashedOut = false) {
+  const embed = new EmbedBuilder()
+    .setColor(
+      isCashedOut || game.cashed_out
+        ? "#00ff00"
+        : game.crashed
+        ? "#ff0000"
+        : "#0099ff"
+    )
+    .setTitle("🚀 Rocket Launch")
+    .addFields(
+      { name: "Bet Amount", value: `🪙${game.betAmount}`, inline: true },
+      {
+        name: "Multiplier",
+        value: `${game.multiplier.toFixed(2)}x`,
+        inline: true,
+      }
+    );
+
+  if (game.crashed) {
+    embed.setDescription("💥 Rocket crashed!").addFields(
+      { name: "Result", value: "You lost your bet.", inline: false },
+      {
+        name: "Crash Point",
+        value: `${game.crashPoint.toFixed(2)}x`,
+        inline: true,
+      }
+    );
+  } else if (isCashedOut || game.cashed_out) {
+    const totalPayout = Math.floor(game.betAmount * game.multiplier);
+    const profit = totalPayout - game.betAmount;
+    embed.setDescription("🎉 Successfully cashed out!").addFields(
+      { name: "Profit", value: `🪙${profit}`, inline: true },
+      {
+        name: "Crash Point",
+        value: `${game.crashPoint.toFixed(2)}x`,
+        inline: true,
+      }
+    );
+  } else {
+    const potentialPayout = Math.floor(game.betAmount * game.multiplier);
+    embed
+      .setDescription("Rocket is launching! 🚀")
+      .addFields({
+        name: "Potential Payout",
+        value: `🪙${potentialPayout}`,
+        inline: true,
+      })
+      .setFooter({ text: "Cash out before the rocket crashes!" });
+  }
+
+  return embed;
+}
+function createRocketLaunchButtons(disabled) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("cashout")
+      .setLabel("Cash Out")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled)
+  );
+}
+
+async function runRocketLaunch(userId) {
+  const game = activeGames.get(userId);
+  if (!game || game.crashed || game.cashed_out) return;
+
+  game.multiplier += 0.1; // Increase by 0.05x each tick
+
+  if (game.multiplier >= game.crashPoint) {
+    game.crashed = true;
+    const embed = createRocketLaunchEmbed(game);
+    const buttons = createRocketLaunchButtons(true);
+    await game.message.edit({ embeds: [embed], components: [buttons] });
+    activeGames.delete(userId);
+    return;
+  }
+
+  const embed = createRocketLaunchEmbed(game);
+  await game.message.edit({ embeds: [embed] });
+
+  setTimeout(() => runRocketLaunch(userId), TICK_RATE);
+}
+
+function startRocketLaunch(userId, betAmount, message) {
+  const crashPoint = calculateCrashPoint();
+  const game = {
+    userId,
+    betAmount,
+    multiplier: 1,
+    crashed: false,
+    cashed_out: false,
+    message: null,
+    crashPoint: crashPoint,
+  };
+
+  activeGames.set(userId, game);
+
+  const embed = createRocketLaunchEmbed(game);
+  const buttons = createRocketLaunchButtons(false);
+
+  return message.reply({ embeds: [embed], components: [buttons] });
+}
+function calculateCrashPoint() {
+  // Formula: 99 / (1 - R) where R is a random number between 0 and 1
+  const r = Math.random();
+  let crashPoint = 100 / (100 * r);
+
+  // Round to the nearest 0.1
+  crashPoint = Math.round(crashPoint * 10) / 10;
+
+  // Limit the maximum crash point to 100x for practicality
+  return Math.min(Math.max(1, crashPoint), 100);
 }
