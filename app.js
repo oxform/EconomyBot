@@ -27,6 +27,7 @@ require("dotenv").config();
 const { LETTER_COMBINATIONS } = require("./utils.js");
 
 const bankAccounts = new Collection();
+
 const coinflipStats = new Map();
 const hoboCooldowns = new Map();
 const blackjackStats = new Map();
@@ -90,7 +91,7 @@ async function handleDaily(message) {
   const user = await Users.findOne({ where: { user_id: combinedId } });
   const now = new Date();
   const cooldownAmount = 16 * 60 * 60 * 1000; // 16 hours in milliseconds
-  const baseAmount = Math.floor(Math.random() * (400 - 100 + 1)) + 700;
+  const baseAmount = Math.floor(Math.random() * (500 - 100 + 1)) + 850;
   const dailyAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
 
   if (user.last_daily && now - user.last_daily < cooldownAmount) {
@@ -298,6 +299,8 @@ async function initializeBankAccounts() {
   });
 }
 
+const userLastChannel = new Map();
+
 // Deposit money into bank
 async function deposit(userId, amount) {
   const balance = await getBalance(userId);
@@ -366,7 +369,6 @@ async function calculateInterest(userId) {
   const fullBalance = await getFullBalance(userId);
   const userLevel = await calculateLevel(userId);
 
-  const now = Date.now();
   const interestPeriodHours = 1;
   let interestRate = 0.5; // Base rate: 0.5% per hour
 
@@ -379,7 +381,22 @@ async function calculateInterest(userId) {
   interestRate += 5 * interestBoostLevel; // 5% increase per level
 
   const user = await Users.findOne({ where: { user_id: userId } });
-  let lastInterestTime = user.last_interest_collected || timeStarted;
+  const now = Date.now();
+
+  // Handle lastInterestTime more carefully
+  let lastInterestTime;
+  if (user.last_interest_collected instanceof Date) {
+    lastInterestTime = user.last_interest_collected.getTime();
+  } else if (typeof user.last_interest_collected === "number") {
+    lastInterestTime = user.last_interest_collected;
+  } else {
+    // If it's neither a Date nor a number, set it to now
+    lastInterestTime = now;
+    await Users.update(
+      { last_interest_collected: new Date(now) },
+      { where: { user_id: userId } }
+    );
+  }
 
   const hoursPassed = (now - lastInterestTime) / (1000 * 60 * 60);
   const periodsPassed = Math.floor(hoursPassed / interestPeriodHours);
@@ -395,17 +412,26 @@ async function calculateInterest(userId) {
     totalAccumulatedInterest += newInterest;
 
     // Update database
+    // Only update the last_interest_collected time for the completed periods
+    const newLastInterestTime =
+      lastInterestTime + periodsPassed * interestPeriodHours * 60 * 60 * 1000;
     await Users.update(
-      { accumulated_interest: totalAccumulatedInterest },
+      {
+        accumulated_interest: totalAccumulatedInterest,
+        last_interest_collected: new Date(newLastInterestTime),
+      },
       { where: { user_id: userId } }
     );
+
+    // Update the lastInterestTime for the next calculation
+    lastInterestTime = newLastInterestTime;
   }
 
   const nextInterestTime =
     lastInterestTime + interestPeriodHours * 60 * 60 * 1000;
   const minutesRemaining = Math.max(
     0,
-    Math.ceil((nextInterestTime - now) / (1000 * 60))
+    Math.floor((nextInterestTime - now) / (1000 * 60))
   );
 
   return {
@@ -415,7 +441,6 @@ async function calculateInterest(userId) {
     minutesRemaining,
   };
 }
-
 async function addBalance(id, amount) {
   const user = bankAccounts.get(id);
   if (user) {
@@ -551,6 +576,7 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const commandName = args.shift().toLowerCase();
   const combinedId = createCombinedId(message.author.id, message.guild.id);
+  userLastChannel.set(combinedId, message.channel);
 
   await createUserIfNotExists(combinedId);
 
@@ -603,6 +629,7 @@ client.on("messageCreate", async (message) => {
   if (commandName === "buy") {
     const itemInput = args.join(" ").toLowerCase();
     const user = await getFullBalance(combinedId);
+    const oldLevel = await calculateLevel(combinedId);
     if (!itemInput) {
       return message.reply("Please specify a printer to buy.");
     }
@@ -618,6 +645,12 @@ client.on("messageCreate", async (message) => {
     });
 
     const item = matchingItems[0];
+
+    if (!item) {
+      return message.reply(
+        `No printers match "${itemInput}". Please check the shop for available printers.`
+      );
+    }
 
     // Check if the user already owns this type of printer
     const existingPrinter = await UserItems.findOne({
@@ -702,6 +735,8 @@ client.on("messageCreate", async (message) => {
       .setFooter({ text: "Azus Bot" })
       .setTimestamp();
 
+    const newLevel = await calculateLevel(combinedId);
+    await checkUnlockedPassives(combinedId, oldLevel, newLevel);
     return message.reply({ embeds: [embed] });
   }
   if (commandName === "leaderboard" || commandName === "lb") {
@@ -735,7 +770,7 @@ client.on("messageCreate", async (message) => {
       }, 5000);
       return;
     }
-    const baseAmount = Math.floor(Math.random() * (300 - 100 + 1)) + 250;
+    const baseAmount = Math.floor(Math.random() * (350 - 100 + 1)) + 350;
     const addAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
     await addBalance(combinedId, addAmount);
     const newBalance = await getBalance(combinedId);
@@ -774,7 +809,7 @@ client.on("messageCreate", async (message) => {
     const successRate = Math.random();
     if (successRate < 0.8) {
       // 80% chance of success
-      const baseAmount = Math.floor(Math.random() * 600) + 450; // Higher risk, higher reward
+      const baseAmount = Math.floor(Math.random() * 600) + 500; // Higher risk, higher reward
       const addAmount = await applyIncomeBoostPassive(combinedId, baseAmount);
       await addBalance(combinedId, addAmount);
       const newBalance = await getBalance(combinedId);
@@ -1089,7 +1124,7 @@ client.on("messageCreate", async (message) => {
           embed.addFields(
             {
               name: "Collectable Printer Money",
-              value: `🪙 ${Math.floor(printerMoney.totalReady)}`,
+              value: `🪙 ${printerMoney.totalReady.toLocaleString()}`,
               inline: false,
             },
             {
@@ -1333,7 +1368,7 @@ client.on("messageCreate", async (message) => {
 
     let earnedAmount;
     let description;
-    const baseAmount = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
+    const baseAmount = Math.floor(Math.random() * (250 - 50 + 1)) + 100;
     const amountToAdd = await applyIncomeBoostPassive(combinedId, baseAmount);
 
     if (totalBalance < 0) {
@@ -2530,20 +2565,23 @@ client.on("interactionCreate", async (interaction) => {
     game.cashed_out = true;
     const totalPayout = Math.floor(game.betAmount * game.multiplier);
     const profit = totalPayout - game.betAmount;
-    await addBalance(userId, totalPayout);
 
-    const embed = createRocketLaunchEmbed(game, true);
+    // Apply gambling income boost to the profit
+    const boostedProfit = await applyGamblingIncomeBoost(userId, profit);
+    const boostedTotalPayout = game.betAmount + boostedProfit;
+
+    await addBalance(userId, boostedTotalPayout);
+
+    const embed = await createRocketLaunchEmbed(game, true);
     const buttons = createRocketLaunchButtons(true);
     await game.message.edit({ embeds: [embed], components: [buttons] });
     activeGames.delete(userId);
 
-    await interaction.reply(
-      `Congratulations! You cashed out and won 🪙${profit} in profit! The rocket would have crashed at ${game.crashPoint.toFixed(
-        2
-      )}x.`
-    );
+    return interaction.reply({
+      content: `You cashed out and received 🪙${boostedTotalPayout.toLocaleString()}!`,
+      ephemeral: true,
+    });
   }
-
   if (interaction.customId.startsWith("heist_upgrade_")) {
     const upgradeType = interaction.customId.split("_")[2];
     await performHeistUpgrade(interaction, upgradeType);
@@ -2613,7 +2651,6 @@ client.on("interactionCreate", async (interaction) => {
         await Users.update(
           {
             accumulated_interest: 0,
-            last_interest_collected: new Date(),
           },
           { where: { user_id: combinedId } }
         );
@@ -2624,7 +2661,7 @@ client.on("interactionCreate", async (interaction) => {
         const balanceEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
 
         // Update relevant fields in the balance embed
-        ww(balanceEmbed, newBalance);
+        updateBalanceEmbedFields(balanceEmbed, newBalance);
 
         // Remove the collectable interest field
         const interestFieldIndex = balanceEmbed.data.fields.findIndex(
@@ -2680,7 +2717,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
   }
-
   if (
     interaction.customId.startsWith("spin_slots_") ||
     interaction.customId.startsWith("play_again_")
@@ -2717,6 +2753,7 @@ client.on("interactionCreate", async (interaction) => {
     const user = await Users.findOne({
       where: { user_id: combinedId },
     });
+    const oldLevel = await calculateLevel(combinedId);
     const printer = await UserItems.findOne({
       where: { user_id: combinedId, item_id: printerId },
       include: ["item"],
@@ -2796,6 +2833,8 @@ client.on("interactionCreate", async (interaction) => {
       updatedUser
     );
 
+    const newLevel = await calculateLevel(combinedId);
+    await checkUnlockedPassives(combinedId, oldLevel, newLevel);
     // Update the message with the new embed and buttons
     return await interaction.update({ embeds: [embed], components: [row] });
   } else if (interaction.customId === "open_prestige_shop") {
@@ -2896,16 +2935,19 @@ async function calculatePrinterMoney(printers) {
       {} // Empty object to exclude prestige upgrades
     );
 
-    // Calculate capacity without passive boost
+    // Calculate capacity
     const capacityWithoutPassive = calculateCapacity(
+      baseRate,
+      printer.capacity_level,
+      {}
+    );
+    let capacity = calculateCapacity(
       baseRate,
       printer.capacity_level,
       prestigeUpgrades
     );
-    const capacity = applyPrinterCapacityPassive(
-      capacityWithoutPassive,
-      userLevel
-    );
+
+    capacity = applyPrinterCapacityPassive(capacity, userLevel);
 
     const minutesSinceLastCollection =
       (Date.now() - printer.last_collected) / (1000 * 60);
@@ -2947,6 +2989,11 @@ async function calculatePrinterMoney(printers) {
     });
 
     totalReady += actualGenerated;
+  }
+
+  // If totalReady is a number, Math.floor it
+  if (!isNaN(totalReady)) {
+    totalReady = Math.floor(totalReady);
   }
 
   return { totalReady, printerDetails };
@@ -4095,6 +4142,7 @@ async function performHeistUpgrade(interaction, shortUpgradeType) {
   try {
     const userId = createCombinedId(interaction.user.id, interaction.guild.id);
     const user = await Users.findOne({ where: { user_id: userId } });
+    const oldLevel = await calculateLevel(userId);
     if (!user) {
       return interaction.reply({
         content: "User not found. Please try again.",
@@ -4162,6 +4210,8 @@ async function performHeistUpgrade(interaction, shortUpgradeType) {
     const { embed, upgradeInfo } = await createHeistUpgradeEmbed(userId);
     const updatedRow = createHeistUpgradeButtons(upgradeInfo);
 
+    const newLevel = await calculateLevel(userId);
+    await checkUnlockedPassives(userId, oldLevel, newLevel);
     return await interaction.update({
       embeds: [embed],
       components: [updatedRow],
@@ -5284,7 +5334,7 @@ function formatPrinterInfo(printerDetails) {
     .join("\n");
 }
 
-function createRocketLaunchEmbed(game, isCashedOut = false) {
+async function createRocketLaunchEmbed(game, isCashedOut = false) {
   const embed = new EmbedBuilder()
     .setColor(
       isCashedOut || game.cashed_out
@@ -5315,8 +5365,9 @@ function createRocketLaunchEmbed(game, isCashedOut = false) {
   } else if (isCashedOut || game.cashed_out) {
     const totalPayout = Math.floor(game.betAmount * game.multiplier);
     const profit = totalPayout - game.betAmount;
+    const boostedProfit = await applyGamblingIncomeBoost(game.userId, profit);
     embed.setDescription("🎉 Successfully cashed out!").addFields(
-      { name: "Profit", value: `🪙${profit}`, inline: true },
+      { name: "Profit", value: `🪙${boostedProfit}`, inline: true },
       {
         name: "Crash Point",
         value: `${game.crashPoint.toFixed(2)}x`,
@@ -5337,6 +5388,7 @@ function createRocketLaunchEmbed(game, isCashedOut = false) {
 
   return embed;
 }
+
 function createRocketLaunchButtons(disabled) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -5351,24 +5403,49 @@ async function runRocketLaunch(userId) {
   const game = activeGames.get(userId);
   if (!game || game.crashed || game.cashed_out) return;
 
-  game.multiplier += 0.1; // Increase by 0.05x each tick
+  game.multiplier += 0.1; // Increase by 0.1x each tick
 
   if (game.multiplier >= game.crashPoint) {
     game.crashed = true;
-    const embed = createRocketLaunchEmbed(game);
+    const embed = await createRocketLaunchEmbed(game);
     const buttons = createRocketLaunchButtons(true);
     await game.message.edit({ embeds: [embed], components: [buttons] });
+
+    // Apply loss prevention passive
+    const isLossPrevented = await applyGamblingPassive(userId);
+    if (isLossPrevented) {
+      // If loss is prevented, refund the bet amount
+      await addBalance(userId, game.betAmount);
+      const preventionEmbed = new EmbedBuilder()
+        .setColor("#FFFF00")
+        .setTitle("🎲 Loss Prevention Activated!")
+        .setDescription("Your gambling passive has prevented this loss!")
+        .addFields(
+          {
+            name: "Bet Amount Saved",
+            value: `🪙${game.betAmount}`,
+            inline: true,
+          },
+          {
+            name: "Crash Point",
+            value: `${game.crashPoint.toFixed(2)}x`,
+            inline: true,
+          }
+        );
+      await game.message.reply({ embeds: [preventionEmbed] });
+    }
+
     activeGames.delete(userId);
     return;
   }
 
-  const embed = createRocketLaunchEmbed(game);
+  const embed = await createRocketLaunchEmbed(game);
   await game.message.edit({ embeds: [embed] });
 
   setTimeout(() => runRocketLaunch(userId), TICK_RATE);
 }
 
-function startRocketLaunch(userId, betAmount, message) {
+async function startRocketLaunch(userId, betAmount, message) {
   const crashPoint = calculateCrashPoint();
   const game = {
     userId,
@@ -5382,13 +5459,12 @@ function startRocketLaunch(userId, betAmount, message) {
 
   activeGames.set(userId, game);
 
-  const embed = createRocketLaunchEmbed(game);
+  const embed = await createRocketLaunchEmbed(game);
   const buttons = createRocketLaunchButtons(false);
 
   return message.reply({ embeds: [embed], components: [buttons] });
 }
 function calculateCrashPoint() {
-  // Formula: 99 / (1 - R) where R is a random number between 0 and 1
   const r = Math.random();
   let crashPoint = 100 / (100 * r);
 
@@ -5397,4 +5473,36 @@ function calculateCrashPoint() {
 
   // Limit the maximum crash point to 100x for practicality
   return Math.min(Math.max(1, crashPoint), 100);
+}
+
+async function checkUnlockedPassives(userId, oldLevel, newLevel) {
+  const newlyUnlockedPassives = ALL_PASSIVES.filter(
+    (passive) => passive.level > oldLevel && passive.level <= newLevel
+  );
+
+  if (newlyUnlockedPassives.length > 0) {
+    const embed = new EmbedBuilder()
+      .setColor("#00ff00")
+      .setTitle("🎉 New Passive(s) Unlocked!")
+      .setDescription(
+        `Congratulations! You've reached level ${newLevel} and unlocked new passive(s):`
+      )
+      .addFields(
+        newlyUnlockedPassives.map((passive) => ({
+          name: `Level ${passive.level} Passive`,
+          value: passive.description,
+        }))
+      )
+      .setFooter({ text: "Keep leveling up to unlock more passives!" })
+      .setTimestamp();
+
+    const channel = await getAppropriateChannel(userId);
+    if (channel) {
+      await channel.send({ embeds: [embed] });
+    }
+  }
+}
+
+async function getAppropriateChannel(userId) {
+  return userLastChannel.get(userId) || null;
 }
