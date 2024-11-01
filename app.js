@@ -4386,7 +4386,10 @@ async function handleCooldowns(message) {
   };
 
   // Calculate heist protection
-  const protectionPeriod = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+  const protectionPeriod = calculateHeistProtectionDuration(
+    await calculateLevel(combinedId),
+    await getUserPrestigeUpgradesFromId(combinedId)
+  );
   const protectionTimeLeft = user.last_heisted
     ? Math.max(0, protectionPeriod - (now - user.last_heisted.getTime()))
     : 0;
