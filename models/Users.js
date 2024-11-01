@@ -66,6 +66,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      last_interest_collected: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
     },
     {
       timestamps: false,
