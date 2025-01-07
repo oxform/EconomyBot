@@ -378,7 +378,7 @@ async function calculateInterest(userId) {
 
   const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
   const interestBoostLevel = prestigeUpgrades.interest_rate || 0;
-  interestRate += 5 * interestBoostLevel; // 5% increase per level
+  interestRate += 2.5 * interestBoostLevel; // 3% increase per level
 
   const user = await Users.findOne({ where: { user_id: userId } });
   const now = Date.now();
@@ -3798,6 +3798,22 @@ async function handleHeist(message, targetUser) {
       .setTimestamp();
 
     return message.reply({ embeds: [embed] });
+  } else if (targetNetWorth < 5000000 && userNetWorth > 5000000) {
+    const embed = new EmbedBuilder()
+      .setColor("#FFD700")
+      .setTitle("🛡️ Heist Blocked")
+      .setDescription("You're too wealthy to target this user!")
+      .addFields({
+        name: "Your Net Worth",
+        value: `🪙${userNetWorth.toLocaleString()}`,
+        inline: true,
+      })
+      .setFooter({
+        text: "Tip: Try targeting someone with more than 5,000,000 net worth",
+      })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
   }
 
   const targetLevel = await calculateLevel(targetUserId);
@@ -4650,7 +4666,7 @@ async function applyIncomeBoostPassive(userId, amount) {
 
   // Apply prestige income boost
   const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
-  boost *= 1 + 0.1 * incomeBoostLevel; // 5% increase per level
+  boost *= 1 + 3 * incomeBoostLevel; // 5% increase per level
 
   return Math.floor(amount * boost);
 }
@@ -4667,12 +4683,12 @@ async function getPassives(level, prestigeUpgrades) {
     {
       id: "income_boost",
       emoji: "💰",
-      description: "Increase all income sources by 10%",
+      description: "Increase income from work, crime, daily and hobo by 300%",
     },
     {
       id: "interest_rate",
       emoji: "📈",
-      description: "Increase interest rate by 5%",
+      description: "Increase interest rate by 2.5%",
     },
     {
       id: "printer_efficiency",
@@ -5044,14 +5060,14 @@ const PRESTIGE_SHOP_ITEMS = [
     id: "income_boost",
     name: "Income Boost",
     description:
-      "Permanently increase all income sources by 10% (including gambling)",
+      "Permanently increase income from work, crime, daily and hobo by 300%",
     cost: 1,
     maxLevel: 1,
   },
   {
     id: "interest_rate",
     name: "Interest Rate Boost",
-    description: "Permanently increase interest rate by 5%",
+    description: "Permanently increase interest rate by 2.5%",
     cost: 1,
     maxLevel: 1,
   },
@@ -5229,24 +5245,12 @@ async function handlePrestigeShop(context) {
   return { embeds: [embed], components: [row] };
 }
 
-function getUpgradeEmoji(upgradeId) {
-  const emojiMap = {
-    income_boost: "💰",
-    interest_rate: "📈",
-    printer_efficiency: "⚡",
-    printer_capacity: "📦",
-    gambling_passive: "🎲",
-    heist_protection: "🛡️",
-  };
-  return emojiMap[upgradeId] || "🌟";
-}
-
 async function applyGamblingIncomeBoost(userId, amount) {
-  const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
-  const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
-  const boost = 1 + 0.1 * incomeBoostLevel; // 5% increase per level
-
-  return Math.floor(amount * boost);
+  return amount;
+  // const prestigeUpgrades = await getUserPrestigeUpgradesFromId(userId);
+  // const incomeBoostLevel = prestigeUpgrades.income_boost || 0;
+  // const boost = 1 + 0.1 * incomeBoostLevel; // 5% increase per level
+  // return Math.floor(amount * boost);
 }
 
 function updateBalanceEmbedFields(
