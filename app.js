@@ -1121,18 +1121,20 @@ client.on("messageCreate", async (message) => {
             }
           );
 
-          embed.addFields(
-            {
-              name: "Collectable Printer Money",
-              value: `🪙 ${printerMoney.totalReady.toLocaleString()}`,
-              inline: false,
-            },
-            {
-              name: "Collectable Interest Money",
-              value: `🪙 ${interestInfo.accumulatedInterest.toLocaleString()}`,
-              inline: false,
-            }
-          );
+          embed.addFields({
+            name: "Collectable Printer Money",
+            value: `🪙 ${printerMoney.totalReady.toLocaleString()}`,
+            inline: false,
+          });
+        }
+
+        // Collectable interest
+        if (interestInfo.accumulatedInterest > 0) {
+          embed.addFields({
+            name: "Collectable Interest Money",
+            value: `🪙 ${interestInfo.accumulatedInterest.toLocaleString()}`,
+            inline: false,
+          });
         }
 
         const isOwnAccount = targetCombinedId === combinedId;
@@ -1534,6 +1536,8 @@ client.on("messageCreate", async (message) => {
             "`!coinflip <bet>` (or `!cf`) - Flip a coin and bet on the outcome",
             "`!slots <bet>` - Play the slot machine",
             "`!slotspayout` - View the payout table for slots",
+            "`!rocketlaunch <bet> (or `!rl`)` - Launch a rocket and bet on the outcome",
+            "`!challenge @user <bet>` - Challenge another user to a word wager",
           ].join("\n"),
         },
         {
@@ -1542,7 +1546,7 @@ client.on("messageCreate", async (message) => {
             "`!shop` - View the item shop",
             "`!buy <item>` - Purchase an item from the shop",
             "`!inventory` - View your inventory",
-            "`!upgrade <printer>` - Upgrade your printer for more money",
+            "`!upgrade <printer> (or `!up`)` - Upgrade your printer for more money",
           ].join("\n"),
         },
         {
@@ -4540,6 +4544,7 @@ async function handlePrestige(message) {
   collector.on("collect", async (i) => {
     if (i.customId === "confirm_prestige") {
       await performPrestige(userId);
+      await resetUserState(userId);
       const successEmbed = new EmbedBuilder()
         .setColor("#00ff00")
         .setTitle("Prestige Successful!")
@@ -4614,8 +4619,15 @@ async function performPrestige(userId) {
     // Delete all user items
     await UserItems.destroy({ where: { user_id: userId } });
 
-    // Clear local caches
-    bankAccounts.delete(userId);
+    // Reset bank account state
+    bankAccounts.set(userId, {
+      balance: 0,
+      bank_balance: 0,
+      lastInterest: Date.now(),
+      accumulatedInterest: 0,
+    });
+
+    // Clear other caches
     coinflipStats.delete(userId);
     hoboCooldowns.delete(userId);
     blackjackStats.delete(userId);
@@ -5512,4 +5524,15 @@ async function checkUnlockedPassives(userId, oldLevel, newLevel) {
 
 async function getAppropriateChannel(userId) {
   return userLastChannel.get(userId) || null;
+}
+
+async function resetUserState(userId) {
+  const defaultState = {
+    balance: 0,
+    bank_balance: 0,
+    lastInterest: Date.now(),
+    accumulatedInterest: 0,
+  };
+  bankAccounts.set(userId, defaultState);
+  return defaultState;
 }
